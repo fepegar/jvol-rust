@@ -141,15 +141,15 @@ pub fn write_nifti(
     cursor.write_i16::<LittleEndian>(16)?; // DT_FLOAT32
     cursor.write_i16::<LittleEndian>(32)?; // bitpix
 
-    // pixdim (offset 76)
+    // pixdim (offset 76) — column norms of the rotation/scaling submatrix
     cursor.set_position(76);
     cursor.write_f32::<LittleEndian>(1.0)?; // qfac
-    // Compute pixdim from affine
+    #[allow(clippy::needless_range_loop)]
     for col in 0..3 {
-        let vx = affine[0][col];
-        let vy = affine[1][col];
-        let vz = affine[2][col];
-        let pixdim_val = (vx * vx + vy * vy + vz * vz).sqrt() as f32;
+        let pixdim_val = (0..3)
+            .map(|row| affine[row][col] * affine[row][col])
+            .sum::<f64>()
+            .sqrt() as f32;
         cursor.write_f32::<LittleEndian>(pixdim_val)?;
     }
 
@@ -163,9 +163,9 @@ pub fn write_nifti(
 
     // srow_x (offset 280), srow_y (offset 296), srow_z (offset 312)
     cursor.set_position(280);
-    for row in 0..3 {
-        for col in 0..4 {
-            cursor.write_f32::<LittleEndian>(affine[row][col] as f32)?;
+    for row in &affine[..3] {
+        for &val in row {
+            cursor.write_f32::<LittleEndian>(val as f32)?;
         }
     }
 
@@ -220,10 +220,7 @@ pub fn dtype_from_nifti_code(datatype: i16) -> JvolDtype {
 }
 
 /// Save an encoded volume to a .jvol file (custom binary format).
-pub fn save_jvol(
-    encoded: &EncodedVolume,
-    path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_jvol(encoded: &EncodedVolume, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let serialized = bincode::serialize(encoded)?;
     let file = File::create(path)?;
     let mut gz = GzEncoder::new(BufWriter::new(file), Compression::default());
@@ -252,8 +249,7 @@ pub fn encode_nifti_to_jvol(
     let (array, affine) = read_nifti(input_path)?;
     let shape = [array.shape()[0], array.shape()[1], array.shape()[2]];
 
-    let header = nifti::ReaderOptions::new()
-        .read_file(input_path)?;
+    let header = nifti::ReaderOptions::new().read_file(input_path)?;
     let nifti_dtype = dtype_from_nifti_code(header.header().datatype);
 
     let result = encode_array(&array.view(), block_size, quality);

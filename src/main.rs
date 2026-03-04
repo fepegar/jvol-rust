@@ -7,7 +7,9 @@ use nifti::NiftiObject;
 use jvol_rust::cli::{Cli, Commands};
 use jvol_rust::decoding::decode_array;
 use jvol_rust::encoding::encode_array;
-use jvol_rust::io::{decode_jvol_to_nifti, encode_nifti_to_jvol, read_nifti, dtype_from_nifti_code};
+use jvol_rust::io::{
+    decode_jvol_to_nifti, dtype_from_nifti_code, encode_nifti_to_jvol, read_nifti,
+};
 
 fn main() {
     let cli = Cli::parse();
@@ -38,12 +40,10 @@ fn main() {
                 Ok(()) => {
                     let elapsed = start.elapsed();
                     if verbose {
-                        let input_size = std::fs::metadata(input_path)
-                            .map(|m| m.len())
-                            .unwrap_or(0);
-                        let output_size = std::fs::metadata(output_path)
-                            .map(|m| m.len())
-                            .unwrap_or(0);
+                        let input_size =
+                            std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
+                        let output_size =
+                            std::fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
                         eprintln!(
                             "Done in {:.3}s ({} -> {} bytes, {:.1}x compression)",
                             elapsed.as_secs_f64(),
@@ -138,7 +138,11 @@ fn main() {
             let dec_elapsed = dec_start.elapsed();
 
             // Output: encode_time decode_time
-            println!("{:.6} {:.6}", enc_elapsed.as_secs_f64(), dec_elapsed.as_secs_f64());
+            println!(
+                "{:.6} {:.6}",
+                enc_elapsed.as_secs_f64(),
+                dec_elapsed.as_secs_f64()
+            );
         }
     }
 }

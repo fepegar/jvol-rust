@@ -36,6 +36,7 @@ impl IdctPlans {
 }
 
 /// Decode RLE-compressed DC and AC sequences back into a 3D array.
+#[allow(clippy::too_many_arguments)]
 pub fn decode_array(
     dc_rle: &RleData,
     ac_rle: &RleData,
@@ -158,7 +159,9 @@ fn idct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &IdctPlans) 
             for i in 0..si {
                 temp_i[i] = data[i * sj * sk + j * sk + k];
             }
-            plans.dct3_i.process_dct3_with_scratch(&mut temp_i, &mut scratch_i);
+            plans
+                .dct3_i
+                .process_dct3_with_scratch(&mut temp_i, &mut scratch_i);
             for i in 0..si {
                 data[i * sj * sk + j * sk + k] = temp_i[i];
             }
@@ -171,7 +174,9 @@ fn idct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &IdctPlans) 
             for j in 0..sj {
                 temp_j[j] = data[i * sj * sk + j * sk + k];
             }
-            plans.dct3_j.process_dct3_with_scratch(&mut temp_j, &mut scratch_j);
+            plans
+                .dct3_j
+                .process_dct3_with_scratch(&mut temp_j, &mut scratch_j);
             for j in 0..sj {
                 data[i * sj * sk + j * sk + k] = temp_j[j];
             }
@@ -182,10 +187,9 @@ fn idct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &IdctPlans) 
     for i in 0..si {
         for j in 0..sj {
             let offset = i * sj * sk + j * sk;
-            plans.dct3_k.process_dct3_with_scratch(
-                &mut data[offset..offset + sk],
-                &mut scratch_k,
-            );
+            plans
+                .dct3_k
+                .process_dct3_with_scratch(&mut data[offset..offset + sk], &mut scratch_k);
         }
     }
 
@@ -216,9 +220,7 @@ fn assemble_blocks(
         for li in 0..block_shape[0] {
             for lj in 0..block_shape[1] {
                 for lk in 0..block_shape[2] {
-                    let flat_idx = li * block_shape[1] * block_shape[2]
-                        + lj * block_shape[2]
-                        + lk;
+                    let flat_idx = li * block_shape[1] * block_shape[2] + lj * block_shape[2] + lk;
                     array[[i0 + li, j0 + lj, k0 + lk]] = block[flat_idx];
                 }
             }

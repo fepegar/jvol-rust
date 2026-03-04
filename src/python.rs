@@ -27,7 +27,10 @@ fn decode(input: &str, output: &str) -> PyResult<()> {
 
 /// Read a NIfTI file and return (array, affine) as numpy arrays.
 #[pyfunction]
-fn read_nifti_array(py: Python<'_>, path: &str) -> PyResult<(Py<PyArray3<f64>>, Py<PyArray2<f64>>)> {
+fn read_nifti_array(
+    py: Python<'_>,
+    path: &str,
+) -> PyResult<(Py<PyArray3<f64>>, Py<PyArray2<f64>>)> {
     let (array, affine) = read_nifti(Path::new(path))
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
@@ -35,7 +38,10 @@ fn read_nifti_array(py: Python<'_>, path: &str) -> PyResult<(Py<PyArray3<f64>>, 
         ndarray::Array2::from_shape_vec((4, 4), affine.iter().flatten().copied().collect())
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-    Ok((array.into_pyarray(py).into(), affine_nd.into_pyarray(py).into()))
+    Ok((
+        array.into_pyarray(py).into(),
+        affine_nd.into_pyarray(py).into(),
+    ))
 }
 
 /// Encode a numpy array to .jvol bytes.

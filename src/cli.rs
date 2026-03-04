@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "jvol-rust", about = "Lightning-fast JPEG compression for 3D medical images")]
+#[command(
+    name = "jvol-rust",
+    about = "Lightning-fast JPEG compression for 3D medical images"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

@@ -1,2 +1,10 @@
 /target
 /site
+__pycache__/
+*.pyc
+*.so
+*.dylib
+*.dSYM/
+*.egg-info/
+dist/
+.venv/

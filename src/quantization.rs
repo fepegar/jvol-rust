@@ -10,16 +10,13 @@ pub fn get_multiplier(quality: u8) -> f64 {
 
     // Compute multipliers for all qualities 1..=100
     let mut multipliers = [0.0f64; 100];
-    for i in 0..100 {
-        let q = i as f64; // quality - 1 (0-indexed)
-        multipliers[i] = 1.0 + (max_multiplier - 1.0) * (-q / spread).exp();
+    for (i, m) in multipliers.iter_mut().enumerate() {
+        let q = i as f64;
+        *m = 1.0 + (max_multiplier - 1.0) * (-q / spread).exp();
     }
 
     // Rescale to [1, max_multiplier]
-    let min_val = multipliers
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
+    let min_val = multipliers.iter().copied().fold(f64::INFINITY, f64::min);
     let max_val = multipliers
         .iter()
         .copied()
@@ -48,8 +45,7 @@ pub fn get_quantization_table(shape: BlockShape, quality: u8) -> Vec<f32> {
     for i in 0..si {
         for j in 0..sj {
             for k in 0..sk {
-                let norm =
-                    ((i * i + j * j + k * k) as f64).sqrt();
+                let norm = ((i * i + j * j + k * k) as f64).sqrt();
                 norms.push(norm);
             }
         }
@@ -88,7 +84,10 @@ mod tests {
     fn test_multiplier_range() {
         let m1 = get_multiplier(1);
         let m100 = get_multiplier(100);
-        assert!(m1 > m100, "quality 1 should have higher multiplier than 100");
+        assert!(
+            m1 > m100,
+            "quality 1 should have higher multiplier than 100"
+        );
         assert!(m100 >= 1.0, "multiplier should be >= 1");
     }
 

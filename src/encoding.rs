@@ -45,11 +45,7 @@ impl DctPlans {
 }
 
 /// Encode a 3D array into compressed DC and AC RLE sequences.
-pub fn encode_array(
-    array: &ArrayView3<f64>,
-    block_size: usize,
-    quality: u8,
-) -> EncodeResult {
+pub fn encode_array(array: &ArrayView3<f64>, block_size: usize, quality: u8) -> EncodeResult {
     let block_shape: BlockShape = [block_size, block_size, block_size];
     let quantization_table = get_quantization_table(block_shape, quality);
 
@@ -172,10 +168,9 @@ fn dct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &DctPlans) ->
     for i in 0..si {
         for j in 0..sj {
             let offset = i * sj * sk + j * sk;
-            plans.dct2_k.process_dct2_with_scratch(
-                &mut data[offset..offset + sk],
-                &mut scratch_k,
-            );
+            plans
+                .dct2_k
+                .process_dct2_with_scratch(&mut data[offset..offset + sk], &mut scratch_k);
         }
     }
 
@@ -185,7 +180,9 @@ fn dct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &DctPlans) ->
             for j in 0..sj {
                 temp_j[j] = data[i * sj * sk + j * sk + k];
             }
-            plans.dct2_j.process_dct2_with_scratch(&mut temp_j, &mut scratch_j);
+            plans
+                .dct2_j
+                .process_dct2_with_scratch(&mut temp_j, &mut scratch_j);
             for j in 0..sj {
                 data[i * sj * sk + j * sk + k] = temp_j[j];
             }
@@ -198,7 +195,9 @@ fn dct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &DctPlans) ->
             for i in 0..si {
                 temp_i[i] = data[i * sj * sk + j * sk + k];
             }
-            plans.dct2_i.process_dct2_with_scratch(&mut temp_i, &mut scratch_i);
+            plans
+                .dct2_i
+                .process_dct2_with_scratch(&mut temp_i, &mut scratch_i);
             for i in 0..si {
                 data[i * sj * sk + j * sk + k] = temp_i[i];
             }

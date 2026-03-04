@@ -1,0 +1,44 @@
+[tasks.test]
+description = "Run all Rust tests"
+run = "cargo test"
+
+[tasks.lint]
+description = "Run clippy linter"
+run = "cargo clippy -- -D warnings"
+
+[tasks.fmt]
+description = "Check code formatting"
+run = "cargo fmt -- --check"
+
+[tasks."fmt:fix"]
+description = "Auto-format code"
+run = "cargo fmt"
+
+[tasks.build]
+description = "Build release binary"
+run = "cargo build --release"
+
+[tasks."python:develop"]
+description = "Install Python package in development mode"
+run = "uv run --with maturin maturin develop"
+
+[tasks."python:build"]
+description = "Build Python wheel"
+run = "uv run --with maturin maturin build --release"
+
+[tasks."python:test"]
+description = "Test Python import"
+depends = ["python:develop"]
+run = "uv run python -c 'import jvol; print(\"jvol imported successfully\")'"
+
+[tasks."docs:build"]
+description = "Build documentation"
+run = "uv run --with zensical zensical build"
+
+[tasks."docs:serve"]
+description = "Serve documentation locally"
+run = "uv run --with zensical zensical serve"
+
+[tasks.ci]
+description = "Run all CI checks"
+depends = ["fmt", "lint", "test"]

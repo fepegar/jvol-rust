@@ -17,8 +17,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
 
-  build:
-    name: Build (${{ matrix.target }})
+  build-binary:
+    name: Binary (${{ matrix.target }})
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -52,9 +52,59 @@ jobs:
           name: jvol-rust-${{ matrix.target }}
           path: jvol-rust-${{ matrix.target }}.tar.gz
 
+  build-wheels:
+    name: Wheel (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: macos-latest
+            target: x86_64
+          - os: macos-latest
+            target: aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --features python
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  build-sdist:
+    name: Source dist
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
   release:
     name: Create Release
-    needs: build
+    needs: [build-binary, build-wheels, build-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,4 +117,23 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: artifacts/*/jvol-rust-*.tar.gz
+          files: |
+            artifacts/jvol-rust-*/jvol-rust-*.tar.gz
+            artifacts/wheel-*/*.whl
+            artifacts/sdist/*.tar.gz
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: release
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{wheel-*,sdist}"
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
