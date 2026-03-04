@@ -16,6 +16,9 @@ classifiers = [
 ]
 dependencies = ["numpy"]
 
+[project.scripts]
+jvol = "jvol.cli:main"
+
 [tool.maturin]
 features = ["python"]
 python-source = "python"
