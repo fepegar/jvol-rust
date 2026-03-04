@@ -14,7 +14,7 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
-dependencies = ["numpy"]
+dependencies = ["numpy", "typer"]
 
 [project.scripts]
 jvol = "jvol.cli:main"
