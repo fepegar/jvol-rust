@@ -1,0 +1,21 @@
+[package]
+name = "jvol-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ndarray = { version = "0.15", features = ["rayon"] }
+rustdct = "0.7"
+rustfft = "6"
+nifti = "0.15"
+clap = { version = "4", features = ["derive"] }
+rayon = "1.8"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+flate2 = "1"
+byteorder = "1"
+num-traits = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
