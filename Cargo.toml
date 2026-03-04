@@ -2,6 +2,17 @@
 name = "jvol-rust"
 version = "0.1.0"
 edition = "2021"
+description = "Lightning-fast JPEG-like compression for 3D medical images"
+license = "MIT"
+repository = "https://github.com/fepegar/jvol-rust"
+
+[lib]
+name = "jvol_rust"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python = ["dep:pyo3", "dep:numpy"]
 
 [dependencies]
 ndarray = { version = "0.15", features = ["rayon"] }
@@ -15,6 +26,8 @@ bincode = "1"
 flate2 = "1"
 byteorder = "1"
 num-traits = "0.2"
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+numpy = { version = "0.23", optional = true }
 
 [profile.release]
 opt-level = 3

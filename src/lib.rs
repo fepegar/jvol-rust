@@ -4,3 +4,6 @@ pub mod encoding;
 pub mod io;
 pub mod quantization;
 pub mod types;
+
+#[cfg(feature = "python")]
+mod python;
