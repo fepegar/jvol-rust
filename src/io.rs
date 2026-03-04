@@ -91,16 +91,18 @@ pub fn read_nifti(path: &Path) -> Result<(Array3<f64>, Affine4x4), Box<dyn std::
     let volume = obj.into_volume();
     let ndarray_data = volume.into_ndarray::<f64>()?;
 
-    // NIfTI stores data in [z, y, x] order for 3D
     let shape = ndarray_data.shape();
     if shape.len() < 3 {
         return Err("Expected at least 3 dimensions".into());
     }
 
-    // Get the first 3 dimensions
-    let dim = [shape[0], shape[1], shape[2]];
-    let flat: Vec<f64> = ndarray_data.iter().copied().collect();
-    let array = Array3::from_shape_vec((dim[0], dim[1], dim[2]), flat)?;
+    // The nifti crate returns Fortran-order (column-major) ndarray.
+    // Convert to standard C-order layout to match our encoding pipeline.
+    let array = ndarray_data
+        .into_dimensionality::<ndarray::Ix3>()
+        .map_err(|e| format!("Expected 3D volume: {}", e))?
+        .as_standard_layout()
+        .into_owned();
 
     Ok((array, affine))
 }
@@ -177,24 +179,28 @@ pub fn write_nifti(
         .map(|s| s.ends_with(".nii.gz"))
         .unwrap_or(false);
 
+    // NIfTI stores data in Fortran order (first dimension varies fastest)
+    let write_data = |writer: &mut dyn Write| -> Result<(), Box<dyn std::error::Error>> {
+        writer.write_all(&header)?;
+        writer.write_all(&[0u8; 4])?; // 4-byte extension pad
+        for k in 0..nk {
+            for j in 0..nj {
+                for i in 0..ni {
+                    writer.write_f32::<LittleEndian>(array[[i, j, k]] as f32)?;
+                }
+            }
+        }
+        Ok(())
+    };
+
     if is_gz {
         let file = File::create(path)?;
         let mut gz = GzEncoder::new(BufWriter::new(file), Compression::default());
-        gz.write_all(&header)?;
-        // 4-byte extension pad
-        gz.write_all(&[0u8; 4])?;
-        // Write data as float32
-        for &val in array.iter() {
-            gz.write_f32::<LittleEndian>(val as f32)?;
-        }
+        write_data(&mut gz)?;
         gz.finish()?;
     } else {
         let mut file = BufWriter::new(File::create(path)?);
-        file.write_all(&header)?;
-        file.write_all(&[0u8; 4])?;
-        for &val in array.iter() {
-            file.write_f32::<LittleEndian>(val as f32)?;
-        }
+        write_data(&mut file)?;
     }
 
     Ok(())
