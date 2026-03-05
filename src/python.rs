@@ -1,6 +1,6 @@
+use std::io::{Read, Write};
 use std::path::Path;
 
-use numpy::ndarray::Ix2;
 use numpy::{IntoPyArray, PyArray2, PyArray3, PyReadonlyArray3};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -12,9 +12,10 @@ use crate::types::*;
 
 /// Encode a NIfTI file to a .jvol file.
 #[pyfunction]
-#[pyo3(signature = (input, output, quality=60, block_size=8))]
-fn encode(input: &str, output: &str, quality: u8, block_size: usize) -> PyResult<()> {
-    crate::io::encode_nifti_to_jvol(Path::new(input), Path::new(output), block_size, quality)
+#[pyo3(signature = (input, output, quality=60, lossless=false))]
+fn encode(input: &str, output: &str, quality: u8, lossless: bool) -> PyResult<()> {
+    let quality = if lossless { 0 } else { quality };
+    crate::io::encode_nifti_to_jvol(Path::new(input), Path::new(output), quality)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
@@ -31,7 +32,7 @@ fn read_nifti_array(
     py: Python<'_>,
     path: &str,
 ) -> PyResult<(Py<PyArray3<f64>>, Py<PyArray2<f64>>)> {
-    let (array, affine) = read_nifti(Path::new(path))
+    let (channels, affine) = read_nifti(Path::new(path))
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     let affine_nd =
@@ -39,26 +40,27 @@ fn read_nifti_array(
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     Ok((
-        array.into_pyarray(py).into(),
+        channels.into_iter().next().unwrap().into_pyarray(py).into(),
         affine_nd.into_pyarray(py).into(),
     ))
 }
 
 /// Encode a numpy array to .jvol bytes.
 #[pyfunction]
-#[pyo3(signature = (array, affine, quality=60, block_size=8))]
+#[pyo3(signature = (array, affine, quality=60, lossless=false))]
 fn encode_array_to_bytes(
     py: Python<'_>,
     array: PyReadonlyArray3<f64>,
     affine: numpy::PyReadonlyArray2<f64>,
     quality: u8,
-    block_size: usize,
+    lossless: bool,
 ) -> PyResult<Py<PyBytes>> {
+    let quality = if lossless { 0 } else { quality };
     let arr = array.as_array();
     let aff = affine.as_array();
 
     let shape = [arr.shape()[0], arr.shape()[1], arr.shape()[2]];
-    let result = encode_array(&arr, block_size, quality);
+    let result = encode_array(&arr, quality, JvolDtype::F64);
 
     let mut affine_4x4: Affine4x4 = [[0.0; 4]; 4];
     for i in 0..4 {
@@ -70,29 +72,30 @@ fn encode_array_to_bytes(
     let encoded = EncodedVolume {
         metadata: JvolMetadata {
             shape,
+            num_channels: 1,
             ijk_to_ras: affine_4x4,
             dtype: JvolDtype::F64,
-            intercept: result.intercept,
-            slope: result.slope,
-            block_shape: [block_size, block_size, block_size],
+            wavelet: result.wavelet,
+            levels: result.levels,
             quality,
         },
-        quantization_table: result.quantization_table,
-        dc_rle: result.dc_rle,
-        ac_rle: result.ac_rle,
+        channels: vec![EncodedChannel {
+            subbands: result.subbands,
+            intercept: result.intercept,
+            slope: result.slope,
+            step: result.step,
+        }],
     };
 
     let serialized = bincode::serialize(&encoded)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
-    use std::io::Write;
-
-    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-    gz.write_all(&serialized)
+    let mut encoder = zstd::Encoder::new(Vec::new(), 3)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    let compressed = gz
+    encoder
+        .write_all(&serialized)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    let compressed = encoder
         .finish()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
@@ -105,10 +108,8 @@ fn decode_bytes_to_array(
     py: Python<'_>,
     data: &[u8],
 ) -> PyResult<(Py<PyArray3<f64>>, Py<PyArray2<f64>>)> {
-    use flate2::read::GzDecoder;
-    use std::io::Read;
-
-    let mut decoder = GzDecoder::new(data);
+    let mut decoder = zstd::Decoder::new(data)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     let mut buf = Vec::new();
     decoder
         .read_to_end(&mut buf)
@@ -117,14 +118,16 @@ fn decode_bytes_to_array(
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     let meta = &encoded.metadata;
+    let ch = &encoded.channels[0];
     let array = decode_array(
-        &encoded.dc_rle,
-        &encoded.ac_rle,
-        &encoded.quantization_table,
+        &ch.subbands,
         meta.shape,
-        meta.block_shape,
-        meta.intercept,
-        meta.slope,
+        meta.wavelet,
+        meta.levels,
+        ch.step,
+        ch.intercept,
+        ch.slope,
+        meta.quality,
         meta.dtype,
     );
 

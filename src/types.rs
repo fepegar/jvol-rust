@@ -1,24 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::wavelet::WaveletType;
+
 /// Affine transformation matrix (4x4) mapping voxel indices to RAS+ coordinates.
 pub type Affine4x4 = [[f64; 4]; 4];
-
-/// Shape of the 3D volume.
-pub type VolumeShape = [usize; 3];
-
-/// Shape of a 3D block.
-pub type BlockShape = [usize; 3];
 
 /// Metadata stored alongside the compressed data in a .jvol file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JvolMetadata {
-    pub shape: VolumeShape,
+    pub shape: [usize; 3],
+    pub num_channels: usize,
     pub ijk_to_ras: Affine4x4,
     pub dtype: JvolDtype,
-    pub intercept: f64,
-    pub slope: f64,
-    pub block_shape: BlockShape,
-    pub quality: u8,
+    pub wavelet: WaveletType,
+    pub levels: usize,
+    pub quality: u8, // 0 = lossless
 }
 
 /// Supported data types for volume arrays.
@@ -45,18 +41,33 @@ impl JvolDtype {
     }
 }
 
-/// Run-length encoded data: parallel arrays of values and counts.
+/// One Rice-coded subband within an encoded channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RleData {
-    pub values: Vec<i32>,
-    pub counts: Vec<u32>,
+pub struct EncodedSubband {
+    /// Rice parameter k used for this subband.
+    pub rice_k: u8,
+    /// Number of coefficient values in this subband.
+    pub num_values: u32,
+    /// Rice-coded bitstream bytes.
+    pub data: Vec<u8>,
 }
 
-/// The full encoded representation of a volume.
+/// One encoded channel of a volume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncodedChannel {
+    /// Per-subband Rice-coded data (ordered: coarsest detail first, approximation last).
+    pub subbands: Vec<EncodedSubband>,
+    /// Normalization intercept (lossy only; min value of original data).
+    pub intercept: f64,
+    /// Normalization slope (lossy only; max - min of original data).
+    pub slope: f64,
+    /// Quantization step (lossy only; computed from quality).
+    pub step: f64,
+}
+
+/// The full encoded representation of a (possibly multi-channel) volume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncodedVolume {
     pub metadata: JvolMetadata,
-    pub quantization_table: Vec<f32>,
-    pub dc_rle: RleData,
-    pub ac_rle: RleData,
+    pub channels: Vec<EncodedChannel>,
 }

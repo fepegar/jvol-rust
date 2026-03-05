@@ -1,16 +1,18 @@
 # JVol Rust
 
 <div align="center">
-  <img src="images/logo.png" alt="JVol logo" width="200">
+  <img src="docs/images/logo.png" alt="JVol logo" width="200">
 </div>
 
-Lightning-fast wavelet compression for 3D medical images, written in Rust.
+<p align="center">
+  Lightning-fast wavelet compression for 3D medical images, written in Rust.
+</p>
 
 ---
 
 JVol Rust compresses 3D medical images (NIfTI volumes) using a wavelet-based
 codec with optional lossless mode. It provides both a Rust CLI and a Python
-package.
+package with Rust bindings.
 
 ## Features
 
@@ -23,6 +25,8 @@ package.
 ## Quick start
 
 ```bash
+pip install jvol
+
 # Lossy encode (default quality=60)
 jvol encode brain.nii.gz brain.jvol
 
@@ -41,15 +45,8 @@ jvol decode brain.jvol brain_decoded.nii
 | Colin 2008 (f32) | 217.0 MB | 98.1 MB | 106.3 MB | 1.7 MB (126×) |
 | FPG T1 (u16) | 22.0 MB | 10.4 MB | **9.4 MB** ✓ | 1.2 MB (19×) |
 
-✓ = beats NIfTI + gzip. See the [Benchmark](benchmark.md) page for full results.
+✓ = beats NIfTI + gzip
 
-## How it works
+## Documentation
 
-JVol uses a **3D wavelet transform** (CDF 9/7) for lossy compression and
-**dtype-aware prediction** for lossless mode:
-
-- **Lossy:** 3D DWT → dead-zone quantization → per-subband Rice coding → zstd
-- **Lossless (integer):** delta prediction + byte-shuffle → zstd
-- **Lossless (float):** raw Fortran-order bytes → zstd
-
-Read more in the [Algorithm](algorithm.md) page.
+📖 **[fepegar.github.io/jvol-rust](https://fepegar.github.io/jvol-rust/)**

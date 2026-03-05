@@ -2,6 +2,12 @@
 
 ## Installation
 
+### Python package (recommended)
+
+```bash
+pip install jvol
+```
+
 ### Pre-built binaries
 
 Download the latest release for your platform from the
@@ -45,41 +51,48 @@ The binary will be at `target/release/jvol-rust`.
 
 ## Basic usage
 
-### Encode a NIfTI volume
+### Lossy encode (default)
 
 ```bash
-jvol-rust encode brain.nii.gz brain.jvol
+jvol encode brain.nii.gz brain.jvol
 ```
+
+This uses quality 60 by default, giving ~50× compression on typical brain MRI.
+
+### Lossless encode
+
+```bash
+jvol encode brain.nii.gz brain.jvol --lossless
+```
+
+Exact roundtrip — no information loss. Beats gzip on integer-typed volumes.
 
 ### Decode back to NIfTI
 
 ```bash
-jvol-rust decode brain.jvol brain_decoded.nii.gz
+jvol decode brain.jvol brain_decoded.nii
 ```
+
+!!! tip
+    Decode to `.nii` (not `.nii.gz`) for fastest performance — avoids gzip
+    recompression.
 
 ### Adjust quality
 
 Higher quality means better fidelity but larger file size (1–100, default: 60):
 
 ```bash
-jvol-rust encode brain.nii.gz brain.jvol --quality 80
-```
-
-### Adjust block size
-
-Larger blocks improve quality at the cost of compression ratio (default: 8):
-
-```bash
-jvol-rust encode brain.nii.gz brain.jvol --block-size 16
+jvol encode brain.nii.gz brain.jvol --quality 80
 ```
 
 ## File format
 
-JVol Rust uses a custom binary format (`.jvol`):
+JVol uses a custom binary format (`.jvol`):
 
-- The file is a **gzip-compressed bincode** archive
-- Contains: metadata (shape, affine, dtype, intercept, slope, block shape, quality),
-  quantization table, and RLE-encoded DC/AC coefficient sequences
+- The file is a **zstd-compressed bincode** archive
+- Contains: metadata (shape, affine, dtype, wavelet type, quality) and
+  per-channel encoded data (Rice-coded subbands for lossy, delta-coded
+  bytes for lossless)
 
 !!! note
     The Rust `.jvol` format is **not** compatible with the Python `jvol` format

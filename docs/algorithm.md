@@ -1,20 +1,22 @@
 # Algorithm
 
-JVol Rust implements a 3D variant of the JPEG compression algorithm, adapted for
-volumetric medical images. This page describes each stage of the pipeline.
+JVol uses two different compression pipelines depending on the mode:
+a **wavelet-based** lossy codec and a **prediction-based** lossless codec.
 
-## Overview
+## Lossy mode
 
-The compression pipeline follows the classic JPEG approach, extended from 2D to 3D:
+The lossy pipeline applies a 3D wavelet transform followed by quantization
+and entropy coding:
 
+```mermaid
+flowchart LR
+    A[Input\nVolume] --> B[Normalize\n to ±128]
+    B --> C[3D DWT\nCDF 9/7]
+    C --> D[Dead-zone\nQuantize]
+    D --> E[Per-subband\nRice Coding]
+    E --> F[zstd]
+    F --> G[.jvol]
 ```
-┌─────────┐   ┌────────┐   ┌───────┐   ┌──────────┐   ┌────────┐   ┌─────┐
-│  Input  │──▶│  Pad   │──▶│ Split │──▶│ 3D DCT  │──▶│Quantize│──▶│ RLE │
-│ Volume  │   │ Array  │   │Blocks │   │(per blk) │   │        │   │     │
-└─────────┘   └────────┘   └───────┘   └──────────┘   └────────┘   └─────┘
-```
-
-## Encoding
 
 ### 1. Intensity normalization
 
@@ -25,102 +27,133 @@ normalized = (value - min) / (max - min) × 255 - 128
 ```
 
 The original `min` (intercept) and `max - min` (slope) are stored as metadata
-for lossless reversal during decoding.
+for reversal during decoding.
 
-### 2. Padding
+### 2. 3D Discrete Wavelet Transform (DWT)
 
-The volume is zero-padded so that each spatial dimension is divisible by the
-block size. For example, a 181 × 217 × 181 volume with block size 8 is padded
-to 184 × 224 × 184.
+A **lifting-based CDF 9/7 wavelet transform** is applied along each axis
+of the full volume (no blocking). The transform decomposes the volume into
+subbands at multiple resolution levels:
 
-### 3. Block splitting
+- One **approximation** subband (low-frequency content)
+- Seven **detail** subbands per level (capturing edges and textures along
+  each combination of axes)
 
-The padded volume is split into non-overlapping cubic blocks. With block size 8,
-each block is 8 × 8 × 8 = 512 voxels.
+The number of decomposition levels is automatically determined from the
+volume dimensions.
 
-### 4. 3D Discrete Cosine Transform (DCT)
+!!! info "Why wavelets instead of DCT?"
+    Unlike block-based DCT (JPEG), the wavelet transform operates on the
+    **entire volume** without spatial blocking. This eliminates block
+    artifacts and captures correlations across the full extent of the data.
 
-A **separable 3D DCT-II** is applied to each block independently. "Separable" means
-the 3D transform is decomposed into three sequential 1D DCTs along each axis:
+### 3. Dead-zone quantization
 
-1. DCT along the k-axis (innermost, contiguous in memory)
-2. DCT along the j-axis
-3. DCT along the i-axis
-
-This is mathematically equivalent to the full 3D DCT but much more efficient.
-The implementation uses the [`rustdct`](https://crates.io/crates/rustdct) crate
-for optimized 1D DCT computation.
-
-!!! tip "Parallelism"
-    Blocks are processed in parallel using [Rayon](https://crates.io/crates/rayon).
-    DCT plans are pre-computed once and shared across threads via `Arc`, avoiding
-    redundant FFT planning overhead.
-
-### 5. Quantization
-
-Each DCT coefficient is divided by the corresponding value in a **quantization table**
-and rounded to the nearest integer:
+Each wavelet coefficient is quantized with a dead zone around zero:
 
 ```
-quantized[i][j][k] = round(dct[i][j][k] / qtable[i][j][k])
+quantized = sign(coeff) × floor(|coeff| / step)
 ```
 
-The quantization table is generated based on the L2 distance of each frequency index
-from the origin (DC component at `[0, 0, 0]`). Higher frequencies get larger divisors,
-causing more aggressive rounding — this is where the lossy compression happens.
+The `quality` parameter (1–100) controls the step size:
 
-The `quality` parameter (1–100) controls a multiplier on the quantization table:
+- **Quality 1** → large step → aggressive quantization → tiny file
+- **Quality 100** → small step → gentle quantization → larger file
 
-- **Quality 1**: very aggressive quantization → small file, low fidelity
-- **Quality 100**: minimal quantization → large file, high fidelity
+The dead zone ensures that small coefficients (noise) are mapped to zero,
+which is critical for compression.
 
-### 6. Zigzag scan
+### 4. Per-subband Rice coding
 
-The 3D block indices are sorted by their L2 distance from the origin `[0, 0, 0]`.
-This ordering ensures that low-frequency (high-energy) coefficients come first,
-followed by high-frequency (near-zero) coefficients — maximizing RLE effectiveness.
+Each subband is independently entropy-coded using **adaptive Rice (Golomb)
+coding**:
 
-The DC component (index `[0, 0, 0]`) is always first.
+1. Coefficients are **zigzag-encoded** (signed → unsigned)
+2. An **optimal Rice parameter** *k* is computed per subband based on the
+   mean absolute value
+3. Each value is split into a **quotient** (unary-coded) and **remainder**
+   (*k* bits)
 
-### 7. Sequence separation
+This exploits the fact that different subbands have very different
+coefficient distributions — detail subbands at fine scales are mostly zeros,
+while the approximation subband has larger values.
 
-After scanning, the coefficients are split into two sequences:
+### 5. Outer compression
 
-- **DC sequence**: one value per block (the `[0, 0, 0]` coefficient)
-- **AC sequence**: all remaining coefficients in scan order
+The encoded subbands are serialized with
+[bincode](https://github.com/bincode-org/bincode) and compressed with
+**zstd** (level 6).
 
-### 8. Run-length encoding (RLE)
+## Lossless mode
 
-Both the DC and AC sequences are run-length encoded: consecutive identical values
-are stored as `(value, count)` pairs. Since quantization produces many zeros,
-especially in high-frequency AC coefficients, RLE achieves significant compression.
+The lossless pipeline uses dtype-aware prediction to maximize compression
+without any information loss:
+
+```mermaid
+flowchart LR
+    A[Input\nVolume] --> B{Data type?}
+    B -->|Integer| C[Delta\nPrediction]
+    C --> D[Byte\nShuffle]
+    D --> E[zstd]
+    B -->|Float| F[Raw Fortran\nBytes]
+    F --> E
+    E --> G[.jvol]
+```
+
+### Integer path (u8, u16, i16, i32)
+
+1. **Flatten** in Fortran order (column-major) — places spatially adjacent
+   voxels along the fastest-varying axis next to each other in memory
+2. **Delta prediction** — each value is replaced by the difference from its
+   predecessor (wrapping arithmetic). For smooth 3D data, most deltas are
+   near zero
+3. **Byte-shuffle** — for multi-byte types (u16, i16, i32), the byte planes
+   are separated. For example, with u16 data, all low bytes come first, then
+   all high bytes. After delta coding, the high-byte plane is mostly zeros
+4. **zstd** compression (level 12)
+
+!!! success "Beats gzip"
+    This pipeline beats NIfTI + gzip on integer volumes. For example, the
+    FPG T1 volume (`uint16`) compresses to **9.4 MB** vs gzip's **10.4 MB**.
+
+### Float path (f32, f64)
+
+Float data has high-entropy mantissa bits that defeat prediction-based
+schemes. The float path simply stores the raw bytes in Fortran order and
+relies on zstd for compression.
 
 ## Decoding
 
-Decoding reverses each step:
+Decoding reverses each step of the corresponding pipeline:
 
-1. **RLE decode** — expand `(value, count)` pairs back into full sequences
-2. **Sequence to blocks** — reconstruct 3D blocks from DC + AC sequences
-3. **Inverse quantization** — multiply by the quantization table
-4. **3D inverse DCT** (DCT-III) — transform back to spatial domain
-5. **Reassemble** — place blocks back into the full volume grid
-6. **Rescale** — undo the intensity normalization using stored intercept and slope
-7. **Crop** — remove padding to restore the original volume shape
-8. **Clip** — clamp values to the valid range for the original data type
+```mermaid
+flowchart LR
+    A[.jvol] --> B[zstd\nDecompress]
+    B --> C{Lossy?}
+    C -->|Yes| D[Rice\nDecode]
+    D --> E[Dequantize]
+    E --> F[Inverse\n3D DWT]
+    F --> G[Denormalize]
+    C -->|No| H[Unshuffle /\nDelta Decode]
+    H --> I[Reconstruct\nArray]
+    G --> J[Output\nVolume]
+    I --> J
+```
 
 ## File format
 
-The `.jvol` file is a **gzip-compressed bincode** archive containing:
+The `.jvol` file is a **zstd-compressed bincode** archive containing:
 
-| Field                | Type       | Description                              |
-|----------------------|------------|------------------------------------------|
-| `shape`              | `[u64; 3]` | Original volume dimensions               |
-| `ijk_to_ras`         | `[[f64; 4]; 4]` | Affine transformation matrix        |
-| `dtype`              | enum       | Original data type (U8, I16, F32, etc.)  |
-| `intercept`          | `f64`      | Minimum intensity value                  |
-| `slope`              | `f64`      | Intensity range (max - min)              |
-| `block_shape`        | `[u64; 3]` | Block dimensions                         |
-| `quality`            | `u8`       | Quality parameter used for encoding      |
-| `quantization_table` | `Vec<f32>` | Flattened quantization table             |
-| `dc_rle`             | RLE data   | Run-length encoded DC coefficients       |
-| `ac_rle`             | RLE data   | Run-length encoded AC coefficients       |
+| Field            | Type              | Description                             |
+|------------------|-------------------|-----------------------------------------|
+| `shape`          | `[usize; 3]`     | Original volume dimensions              |
+| `num_channels`   | `usize`           | Number of 3D channels                   |
+| `ijk_to_ras`     | `[[f64; 4]; 4]`  | Affine transformation matrix            |
+| `dtype`          | enum              | Original data type (U8, I16, F32, etc.) |
+| `wavelet`        | enum              | Wavelet type used (CDF 9/7 or LeGall)   |
+| `levels`         | `usize`           | Number of DWT decomposition levels      |
+| `quality`        | `u8`              | Quality parameter (0 = lossless)        |
+| `channels`       | `Vec<Channel>`    | Per-channel encoded data                |
+
+Each channel contains per-subband Rice-coded data (lossy) or a single
+prediction-coded block (lossless), plus normalization metadata.

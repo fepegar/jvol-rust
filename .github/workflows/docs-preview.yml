@@ -25,20 +25,28 @@ jobs:
       - name: Build docs
         run: zensical build
 
+      - name: Generate Smokeshow key
+        if: env.SMOKESHOW_AUTH_KEY == ''
+        env:
+          SMOKESHOW_AUTH_KEY: ${{ secrets.SMOKESHOW_AUTH_KEY }}
+        run: |
+          KEY=$(smokeshow generate-key 2>/dev/null | tail -1)
+          echo "SMOKESHOW_AUTH_KEY=$KEY" >> "$GITHUB_ENV"
+
       - name: Deploy to Smokeshow
         id: smokeshow
         env:
-          SMOKESHOW_AUTH_KEY: ${{ secrets.SMOKESHOW_AUTH_KEY }}
+          SMOKESHOW_AUTH_KEY: ${{ secrets.SMOKESHOW_AUTH_KEY || env.SMOKESHOW_AUTH_KEY }}
           SMOKESHOW_GITHUB_STATUS_DESCRIPTION: Docs preview
           SMOKESHOW_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SMOKESHOW_GITHUB_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          OUTPUT=$(smokeshow upload site 2>&1)
-          echo "$OUTPUT"
-          URL=$(echo "$OUTPUT" | grep -oP 'https://[^\s]+\.smokeshow\.link')
+          smokeshow upload site 2>&1 | tee /tmp/smokeshow_output.txt
+          URL=$(grep -oE 'https://smokeshow[^ ]+' /tmp/smokeshow_output.txt | tail -1 | sed 's/,$//')
           echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment PR with preview URL
+        if: steps.smokeshow.outputs.preview_url != ''
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: docs-preview
