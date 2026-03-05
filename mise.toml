@@ -20,7 +20,7 @@ run = "cargo build --release"
 
 [tasks."python:develop"]
 description = "Install Python package in development mode"
-run = "uv run --with maturin maturin develop"
+run = "uv run --with maturin maturin develop --release"
 
 [tasks."python:build"]
 description = "Build Python wheel"
