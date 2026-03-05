@@ -10,7 +10,15 @@ app = typer.Typer(
     name="jvol",
     help="Lightning-fast JPEG compression for 3D medical images",
     add_completion=False,
+    invoke_without_command=True,
 )
+
+
+@app.callback()
+def main_callback(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 
 @app.command()
