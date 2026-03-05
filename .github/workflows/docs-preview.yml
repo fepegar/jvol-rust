@@ -42,7 +42,7 @@ jobs:
           SMOKESHOW_GITHUB_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           smokeshow upload site 2>&1 | tee /tmp/smokeshow_output.txt
-          URL=$(grep -o 'https://[^ ]*\.smokeshow\.link' /tmp/smokeshow_output.txt | head -1)
+          URL=$(grep -oE 'https://smokeshow[^ ]+' /tmp/smokeshow_output.txt | tail -1 | sed 's/,$//')
           echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment PR with preview URL
