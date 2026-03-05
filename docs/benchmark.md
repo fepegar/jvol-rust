@@ -20,7 +20,7 @@ Compression ratio and speed benchmarks across three brain MRI volumes.
 |--------|------|-------|
 | Uncompressed NIfTI | 27.1 MB | 1.0× |
 | NIfTI + gzip | 22.9 MB | 1.2× |
-| **JVol lossless** | **22.9 MB** | **1.2×** |
+| **JVol lossless** | **22.2 MB** | **1.2×** ✓ |
 | JVol lossy q=100 | 2.9 MB | 9.3× |
 | JVol lossy q=80 | 1.4 MB | 19.7× |
 | JVol lossy q=60 | 568 KB | 48.9× |
@@ -33,7 +33,7 @@ Compression ratio and speed benchmarks across three brain MRI volumes.
 |--------|------|-------|
 | Uncompressed NIfTI | 217.0 MB | 1.0× |
 | NIfTI + gzip | 98.1 MB | 2.2× |
-| **JVol lossless** | **106.8 MB** | **2.0×** |
+| **JVol lossless** | **106.3 MB** | **2.0×** |
 | JVol lossy q=100 | 11.3 MB | 19.1× |
 | JVol lossy q=80 | 4.8 MB | 44.8× |
 | JVol lossy q=60 | 1.7 MB | 125.6× |
@@ -46,12 +46,14 @@ Compression ratio and speed benchmarks across three brain MRI volumes.
 |--------|------|-------|
 | Uncompressed NIfTI | 22.0 MB | 1.0× |
 | NIfTI + gzip | 10.4 MB | 2.1× |
-| **JVol lossless** | **14.0 MB** | **1.6×** |
+| **JVol lossless** | **9.4 MB** | **2.3×** ✓ |
 | JVol lossy q=100 | 5.2 MB | 4.3× |
 | JVol lossy q=80 | 2.7 MB | 8.2× |
 | JVol lossy q=60 | 1.2 MB | 18.8× |
 | JVol lossy q=40 | 364 KB | 62.0× |
 | JVol lossy q=20 | 74.1 KB | 304.1× |
+
+✓ = beats NIfTI + gzip
 
 ## Speed
 
@@ -72,20 +74,18 @@ gzip, zstd):
 ### End-to-end times
 
 Full pipeline including NIfTI I/O and entropy coding.
+Decode times are to uncompressed `.nii` (fastest path).
 
-Decode times depend on the output format: writing `.nii.gz` requires
-gzip recompression, which dominates the total time.
+| Image | Mode | Encode | Decode (.nii) |
+|-------|------|--------|---------------|
+| Colin 1998 | Lossless | 1.39 s | 190 ms |
+| Colin 1998 | Lossy q=60 | 476 ms | 125 ms |
+| Colin 2008 | Lossless | 10.95 s | 1.47 s |
+| Colin 2008 | Lossy q=60 | 3.62 s | 904 ms |
+| FPG T1 | Lossless | 2.01 s | 329 ms |
+| FPG T1 | Lossy q=60 | 534 ms | 200 ms |
 
-| Image | Mode | Encode | Decode (.nii) | Decode (.nii.gz) |
-|-------|------|--------|---------------|------------------|
-| Colin 1998 | Lossless | 1.24 s | 0.20 s | 1.26 s |
-| Colin 1998 | Lossy q=60 | 0.48 s | — | 1.24 s |
-| Colin 2008 | Lossless | 7.55 s | 1.49 s | 11.14 s |
-| Colin 2008 | Lossy q=60 | 4.04 s | — | 10.05 s |
-| FPG T1 | Lossless | 1.44 s | 0.39 s | 5.48 s |
-| FPG T1 | Lossy q=60 | 0.54 s | — | 1.95 s |
-
-!!! tip "For fastest decode, write to `.nii`"
+!!! tip "Decode to `.nii` for speed"
     Decoding to uncompressed `.nii` avoids gzip recompression and is
     **5–7× faster** than writing `.nii.gz`.
 
@@ -99,14 +99,17 @@ gzip recompression, which dominates the total time.
 
 ## Notes
 
-### Lossless compression on float data
+### Lossless compression
 
-The Colin volumes use `float32` data with a NIfTI intensity scaling
-factor (`scl_slope`), resulting in non-integer values with high entropy.
-General-purpose compressors like gzip and zstd achieve only ~2× on this
-data. JVol lossless matches gzip for float data and can outperform it
-on integer-typed volumes (e.g., `int16`, `uint8`) where the 3D Lorenzo
-predictor exploits spatial correlation.
+JVol lossless beats NIfTI + gzip on **integer-typed** volumes (e.g.,
+`uint16`, `int16`, `uint8`) using native-width delta prediction +
+byte-shuffling + zstd. For the FPG T1 volume (`uint16`), JVol achieves
+**2.3× compression** vs gzip's 2.1×.
+
+For **float32** data, lossless compression is inherently harder due to
+IEEE 754 mantissa entropy. JVol matches gzip on smaller float volumes
+(Colin 1998) but may trail on very large ones (Colin 2008) where gzip's
+deflate algorithm slightly outperforms zstd at comparable speed settings.
 
 ### No block size parameter
 

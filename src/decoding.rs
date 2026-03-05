@@ -1,6 +1,6 @@
 use ndarray::Array3;
 
-use crate::entropy::{lorenzo_reconstruct_3d, rice_decode_subband};
+use crate::entropy::rice_decode_subband;
 use crate::subbands::{compute_subbands, inject_subband_i32};
 use crate::types::{EncodedSubband, JvolDtype};
 use crate::wavelet::{dwt3d_inverse, WaveletType};
@@ -27,7 +27,7 @@ pub fn decode_array(
     }
 }
 
-/// Lossless decode, dtype-aware.
+/// Lossless decode, dtype-aware: reverse byte-unshuffle + delta/XOR-delta decode.
 fn decode_lossless(
     subbands: &[EncodedSubband],
     shape: [usize; 3],
@@ -39,93 +39,171 @@ fn decode_lossless(
         "Lossless mode expects single encoded block"
     );
     let sub = &subbands[0];
-    let num_voxels = sub.num_values as usize;
     let [ni, nj, nk] = shape;
 
     let mut array = Array3::zeros((ni, nj, nk));
 
-    match sub.rice_k {
-        255 => {
-            // Integer Lorenzo: reverse byte-shuffle → Lorenzo reconstruct (Fortran order)
-            let residuals = byte_unshuffle_i32(&sub.data, num_voxels);
-            let fortran_shape = [nk, nj, ni];
-            let data_i32 = lorenzo_reconstruct_3d(&residuals, fortran_shape);
-            // Unflatten from Fortran order
+    match dtype {
+        JvolDtype::U8 => {
+            let mut vals = sub.data.clone();
+            delta_decode_u8(&mut vals);
             let mut idx = 0;
             for k in 0..nk {
                 for j in 0..nj {
                     for i in 0..ni {
-                        array[[i, j, k]] = data_i32[idx] as f64;
+                        array[[i, j, k]] = vals[idx] as f64;
                         idx += 1;
                     }
                 }
             }
         }
-        254 => {
-            // Raw float bytes in Fortran order
-            match dtype {
-                JvolDtype::F32 => {
-                    let mut idx = 0;
-                    for k in 0..nk {
-                        for j in 0..nj {
-                            for i in 0..ni {
-                                let offset = idx * 4;
-                                let v = f32::from_le_bytes([
-                                    sub.data[offset],
-                                    sub.data[offset + 1],
-                                    sub.data[offset + 2],
-                                    sub.data[offset + 3],
-                                ]);
-                                array[[i, j, k]] = v as f64;
-                                idx += 1;
-                            }
-                        }
+        JvolDtype::U16 => {
+            let unshuffled = byte_unshuffle(&sub.data, 2);
+            let mut vals = from_le_bytes_u16(&unshuffled);
+            delta_decode_u16(&mut vals);
+            let mut idx = 0;
+            for k in 0..nk {
+                for j in 0..nj {
+                    for i in 0..ni {
+                        array[[i, j, k]] = vals[idx] as f64;
+                        idx += 1;
                     }
                 }
-                JvolDtype::F64 => {
-                    let mut idx = 0;
-                    for k in 0..nk {
-                        for j in 0..nj {
-                            for i in 0..ni {
-                                let offset = idx * 8;
-                                let v = f64::from_le_bytes([
-                                    sub.data[offset],
-                                    sub.data[offset + 1],
-                                    sub.data[offset + 2],
-                                    sub.data[offset + 3],
-                                    sub.data[offset + 4],
-                                    sub.data[offset + 5],
-                                    sub.data[offset + 6],
-                                    sub.data[offset + 7],
-                                ]);
-                                array[[i, j, k]] = v;
-                                idx += 1;
-                            }
-                        }
-                    }
-                }
-                _ => unreachable!("rice_k=254 only used for float dtypes"),
             }
         }
-        _ => panic!("Unknown lossless marker: rice_k={}", sub.rice_k),
-    }
-
-    // Clip to dtype range for integer types
-    if let Some((min_val, max_val)) = dtype.iinfo() {
-        array.mapv_inplace(|v| v.max(min_val).min(max_val));
+        JvolDtype::I16 => {
+            let unshuffled = byte_unshuffle(&sub.data, 2);
+            let mut vals = from_le_bytes_i16(&unshuffled);
+            delta_decode_i16(&mut vals);
+            let mut idx = 0;
+            for k in 0..nk {
+                for j in 0..nj {
+                    for i in 0..ni {
+                        array[[i, j, k]] = vals[idx] as f64;
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        JvolDtype::I32 => {
+            let unshuffled = byte_unshuffle(&sub.data, 4);
+            let mut vals = from_le_bytes_i32(&unshuffled);
+            delta_decode_i32(&mut vals);
+            let mut idx = 0;
+            for k in 0..nk {
+                for j in 0..nj {
+                    for i in 0..ni {
+                        array[[i, j, k]] = vals[idx] as f64;
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        JvolDtype::F32 => {
+            // Raw f32 bytes in Fortran order
+            let mut idx = 0;
+            for k in 0..nk {
+                for j in 0..nj {
+                    for i in 0..ni {
+                        let offset = idx * 4;
+                        let v = f32::from_le_bytes([
+                            sub.data[offset],
+                            sub.data[offset + 1],
+                            sub.data[offset + 2],
+                            sub.data[offset + 3],
+                        ]);
+                        array[[i, j, k]] = v as f64;
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        JvolDtype::F64 => {
+            // Raw f64 bytes in Fortran order
+            let mut idx = 0;
+            for k in 0..nk {
+                for j in 0..nj {
+                    for i in 0..ni {
+                        let offset = idx * 8;
+                        let v = f64::from_le_bytes([
+                            sub.data[offset],
+                            sub.data[offset + 1],
+                            sub.data[offset + 2],
+                            sub.data[offset + 3],
+                            sub.data[offset + 4],
+                            sub.data[offset + 5],
+                            sub.data[offset + 6],
+                            sub.data[offset + 7],
+                        ]);
+                        array[[i, j, k]] = v;
+                        idx += 1;
+                    }
+                }
+            }
+        }
     }
 
     array
 }
 
-/// Reverse byte-shuffle: 4 planes of n bytes → n i32 values.
-fn byte_unshuffle_i32(data: &[u8], n: usize) -> Vec<i32> {
-    let mut values = vec![0i32; n];
+// --- Byte unshuffle ---
+
+/// Reverse byte-shuffle: N planes of 1-byte → N-byte elements.
+fn byte_unshuffle(data: &[u8], elem_size: usize) -> Vec<u8> {
+    let n = data.len() / elem_size;
+    let mut out = vec![0u8; data.len()];
     for i in 0..n {
-        let bytes = [data[i], data[n + i], data[2 * n + i], data[3 * n + i]];
-        values[i] = i32::from_le_bytes(bytes);
+        for b in 0..elem_size {
+            out[i * elem_size + b] = data[b * n + i];
+        }
     }
-    values
+    out
+}
+
+// --- Delta decode (prefix sum with wrapping arithmetic) ---
+
+fn delta_decode_u8(data: &mut [u8]) {
+    for i in 1..data.len() {
+        data[i] = data[i].wrapping_add(data[i - 1]);
+    }
+}
+
+fn delta_decode_u16(data: &mut [u16]) {
+    for i in 1..data.len() {
+        data[i] = data[i].wrapping_add(data[i - 1]);
+    }
+}
+
+fn delta_decode_i16(data: &mut [i16]) {
+    for i in 1..data.len() {
+        data[i] = data[i].wrapping_add(data[i - 1]);
+    }
+}
+
+fn delta_decode_i32(data: &mut [i32]) {
+    for i in 1..data.len() {
+        data[i] = data[i].wrapping_add(data[i - 1]);
+    }
+}
+
+// --- Bytes-to-type conversion ---
+
+fn from_le_bytes_u16(data: &[u8]) -> Vec<u16> {
+    data.chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect()
+}
+
+fn from_le_bytes_i16(data: &[u8]) -> Vec<i16> {
+    data.chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect()
+}
+
+fn from_le_bytes_i32(data: &[u8]) -> Vec<i32> {
+    data.chunks_exact(4)
+        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
 }
 
 /// Lossy decode: Rice decode → inverse DWT → denormalize.

@@ -239,8 +239,9 @@ pub fn dtype_from_nifti_code(datatype: i16) -> JvolDtype {
 pub fn save_jvol(encoded: &EncodedVolume, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let serialized = bincode::serialize(encoded)?;
     let file = File::create(path)?;
-    // Level 6 balances compression ratio and speed well for our data
-    let mut encoder = zstd::Encoder::new(BufWriter::new(file), 6)?;
+    // Higher zstd level for lossless (more data to compress, ratio matters more)
+    let level = if encoded.metadata.quality == 0 { 12 } else { 6 };
+    let mut encoder = zstd::Encoder::new(BufWriter::new(file), level)?;
     encoder.write_all(&serialized)?;
     encoder.finish()?;
     Ok(())

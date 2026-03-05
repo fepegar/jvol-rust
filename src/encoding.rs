@@ -1,6 +1,6 @@
 use ndarray::ArrayView3;
 
-use crate::entropy::{lorenzo_predict_3d, rice_encode_subband};
+use crate::entropy::rice_encode_subband;
 use crate::subbands::{compute_subbands, extract_subband_i32};
 use crate::types::{EncodedSubband, JvolDtype};
 use crate::wavelet::{compute_max_levels, dwt3d_forward, WaveletType};
@@ -33,58 +33,47 @@ pub fn encode_array(array: &ArrayView3<f64>, quality: u8, dtype: JvolDtype) -> E
 }
 
 /// Lossless encoding, dtype-aware:
-/// - Integer dtypes: 3D Lorenzo prediction + byte-shuffle → great compression
-/// - Float dtypes: raw native-dtype bytes → zstd handles compression
+/// - All types: native-width storage with delta/XOR-delta prediction + byte-shuffle
 fn encode_lossless(array: &ArrayView3<f64>, dtype: JvolDtype) -> EncodeResult {
     let shape = [array.shape()[0], array.shape()[1], array.shape()[2]];
     let num_voxels = shape[0] * shape[1] * shape[2];
 
     let encoded_data = match dtype {
-        JvolDtype::U8 | JvolDtype::U16 | JvolDtype::I16 | JvolDtype::I32 => {
-            // Integer: Lorenzo prediction (Fortran order for better compression) + byte-shuffle
-            let data_i32 = flatten_fortran_i32(array, shape);
-            // Lorenzo needs the shape in Fortran iteration order [nk, nj, ni]
-            let fortran_shape = [shape[2], shape[1], shape[0]];
-            let residuals = lorenzo_predict_3d(&data_i32, fortran_shape);
-            byte_shuffle_i32(&residuals)
+        JvolDtype::U8 => {
+            let mut vals = flatten_fortran_u8(array, shape);
+            delta_encode_u8(&mut vals);
+            vals // 1 byte per element, no shuffle needed
+        }
+        JvolDtype::U16 => {
+            let mut vals = flatten_fortran_u16(array, shape);
+            delta_encode_u16(&mut vals);
+            byte_shuffle(&to_le_bytes_u16(&vals), 2)
+        }
+        JvolDtype::I16 => {
+            let mut vals = flatten_fortran_i16(array, shape);
+            delta_encode_i16(&mut vals);
+            byte_shuffle(&to_le_bytes_i16(&vals), 2)
+        }
+        JvolDtype::I32 => {
+            let mut vals = flatten_fortran_i32(array, shape);
+            delta_encode_i32(&mut vals);
+            byte_shuffle(&to_le_bytes_i32(&vals), 4)
         }
         JvolDtype::F32 => {
-            // f32: Fortran-order raw bytes (matches NIfTI layout for better compression)
-            let mut bytes = Vec::with_capacity(num_voxels * 4);
-            let [ni, nj, nk] = shape;
-            for k in 0..nk {
-                for j in 0..nj {
-                    for i in 0..ni {
-                        bytes.extend_from_slice(&(array[[i, j, k]] as f32).to_le_bytes());
-                    }
-                }
-            }
-            bytes
+            // f32: raw Fortran-order bytes (best for zstd on this data type)
+            let vals = flatten_fortran_f32(array, shape);
+            vals.iter().flat_map(|v| v.to_le_bytes()).collect()
         }
         JvolDtype::F64 => {
-            // f64: Fortran-order raw bytes
-            let mut bytes = Vec::with_capacity(num_voxels * 8);
-            let [ni, nj, nk] = shape;
-            for k in 0..nk {
-                for j in 0..nj {
-                    for i in 0..ni {
-                        bytes.extend_from_slice(&array[[i, j, k]].to_le_bytes());
-                    }
-                }
-            }
-            bytes
+            // f64: raw Fortran-order bytes
+            let vals = flatten_fortran_f64(array, shape);
+            vals.iter().flat_map(|v| v.to_le_bytes()).collect()
         }
-    };
-
-    // rice_k=255 for integer Lorenzo, rice_k=254 for raw float bytes
-    let marker = match dtype {
-        JvolDtype::U8 | JvolDtype::U16 | JvolDtype::I16 | JvolDtype::I32 => 255,
-        JvolDtype::F32 | JvolDtype::F64 => 254,
     };
 
     EncodeResult {
         subbands: vec![EncodedSubband {
-            rice_k: marker,
+            rice_k: 255, // lossless marker (dtype in metadata determines decode path)
             num_values: num_voxels as u32,
             data: encoded_data,
         }],
@@ -96,7 +85,47 @@ fn encode_lossless(array: &ArrayView3<f64>, dtype: JvolDtype) -> EncodeResult {
     }
 }
 
-/// Flatten array to i32 in Fortran order (column-major, matching NIfTI layout).
+// --- Flatten helpers (Fortran order for optimal spatial correlation) ---
+
+fn flatten_fortran_u8(array: &ArrayView3<f64>, shape: [usize; 3]) -> Vec<u8> {
+    let [ni, nj, nk] = shape;
+    let mut data = Vec::with_capacity(ni * nj * nk);
+    for k in 0..nk {
+        for j in 0..nj {
+            for i in 0..ni {
+                data.push(array[[i, j, k]].round() as u8);
+            }
+        }
+    }
+    data
+}
+
+fn flatten_fortran_u16(array: &ArrayView3<f64>, shape: [usize; 3]) -> Vec<u16> {
+    let [ni, nj, nk] = shape;
+    let mut data = Vec::with_capacity(ni * nj * nk);
+    for k in 0..nk {
+        for j in 0..nj {
+            for i in 0..ni {
+                data.push(array[[i, j, k]].round() as u16);
+            }
+        }
+    }
+    data
+}
+
+fn flatten_fortran_i16(array: &ArrayView3<f64>, shape: [usize; 3]) -> Vec<i16> {
+    let [ni, nj, nk] = shape;
+    let mut data = Vec::with_capacity(ni * nj * nk);
+    for k in 0..nk {
+        for j in 0..nj {
+            for i in 0..ni {
+                data.push(array[[i, j, k]].round() as i16);
+            }
+        }
+    }
+    data
+}
+
 fn flatten_fortran_i32(array: &ArrayView3<f64>, shape: [usize; 3]) -> Vec<i32> {
     let [ni, nj, nk] = shape;
     let mut data = Vec::with_capacity(ni * nj * nk);
@@ -110,17 +139,82 @@ fn flatten_fortran_i32(array: &ArrayView3<f64>, shape: [usize; 3]) -> Vec<i32> {
     data
 }
 
-/// Byte-shuffle i32 values: separate into 4 byte planes.
-/// For small values, high byte planes are mostly zeros → compresses well with zstd.
-fn byte_shuffle_i32(values: &[i32]) -> Vec<u8> {
-    let n = values.len();
-    let mut out = vec![0u8; n * 4];
-    for (i, &v) in values.iter().enumerate() {
-        let bytes = v.to_le_bytes();
-        out[i] = bytes[0]; // plane 0 (LSB)
-        out[n + i] = bytes[1]; // plane 1
-        out[2 * n + i] = bytes[2]; // plane 2
-        out[3 * n + i] = bytes[3]; // plane 3 (MSB)
+fn flatten_fortran_f32(array: &ArrayView3<f64>, shape: [usize; 3]) -> Vec<f32> {
+    let [ni, nj, nk] = shape;
+    let mut data = Vec::with_capacity(ni * nj * nk);
+    for k in 0..nk {
+        for j in 0..nj {
+            for i in 0..ni {
+                data.push(array[[i, j, k]] as f32);
+            }
+        }
+    }
+    data
+}
+
+fn flatten_fortran_f64(array: &ArrayView3<f64>, shape: [usize; 3]) -> Vec<f64> {
+    let [ni, nj, nk] = shape;
+    let mut data = Vec::with_capacity(ni * nj * nk);
+    for k in 0..nk {
+        for j in 0..nj {
+            for i in 0..ni {
+                data.push(array[[i, j, k]]);
+            }
+        }
+    }
+    data
+}
+
+// --- Delta encoding (wrapping arithmetic, captures spatial correlation) ---
+
+fn delta_encode_u8(data: &mut [u8]) {
+    for i in (1..data.len()).rev() {
+        data[i] = data[i].wrapping_sub(data[i - 1]);
+    }
+}
+
+fn delta_encode_u16(data: &mut [u16]) {
+    for i in (1..data.len()).rev() {
+        data[i] = data[i].wrapping_sub(data[i - 1]);
+    }
+}
+
+fn delta_encode_i16(data: &mut [i16]) {
+    for i in (1..data.len()).rev() {
+        data[i] = data[i].wrapping_sub(data[i - 1]);
+    }
+}
+
+fn delta_encode_i32(data: &mut [i32]) {
+    for i in (1..data.len()).rev() {
+        data[i] = data[i].wrapping_sub(data[i - 1]);
+    }
+}
+
+// --- Type-to-bytes conversion ---
+
+fn to_le_bytes_u16(vals: &[u16]) -> Vec<u8> {
+    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn to_le_bytes_i16(vals: &[i16]) -> Vec<u8> {
+    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn to_le_bytes_i32(vals: &[i32]) -> Vec<u8> {
+    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// Byte-shuffle: separate N-byte elements into N planes of 1-byte values.
+/// Adjacent values in each plane came from the same byte position,
+/// creating highly compressible patterns for zstd.
+fn byte_shuffle(data: &[u8], elem_size: usize) -> Vec<u8> {
+    let n = data.len() / elem_size;
+    let mut out = vec![0u8; data.len()];
+    for i in 0..n {
+        for b in 0..elem_size {
+            out[b * n + i] = data[i * elem_size + b];
+        }
     }
     out
 }
