@@ -1,132 +1,132 @@
 # Benchmark
 
-Comparison of the Python [JVol](https://github.com/fepegar/jvol) implementation
-against this Rust implementation.
+Compression ratio and speed benchmarks across three brain MRI volumes.
 
-## Setup
+## Test data
 
-- **Test data**: Colin27 2008 T1 brain MRI (`colin27_t1_tal_hires.nii.gz`)
-- **Volume shape**: 362 × 434 × 362 voxels (~57M voxels)
-- **Parameters**: quality = 60, block size = 8
-- **Hardware**: Apple Silicon (M-series)
+| Image | Shape | Data type | Raw size | NIfTI + gzip |
+|-------|-------|-----------|----------|--------------|
+| [Colin 1998](https://www.bic.mni.mcgill.ca/ServicesAtlases/Colin27) | 181 × 217 × 181 | float32 | 27.1 MB | 22.9 MB |
+| [Colin 2008](https://www.bic.mni.mcgill.ca/ServicesAtlases/Colin27) | 362 × 434 × 362 | float32 | 217.0 MB | 98.1 MB |
+| [FPG T1](https://torchio.readthedocs.io/) | 256 × 256 × 176 | uint16 | 22.0 MB | 10.4 MB |
 
-## Results
+**Hardware:** Apple Silicon (M-series)
 
-|            | Python    | Rust      | Speedup   |
-|------------|-----------|-----------|-----------|
-| **Encode** | ~5.5 s    | 0.56 s    | **~10×**  |
-| **Decode** | ~1.5 s    | 0.76 s    | **~2×**   |
+## Compression ratios
 
-!!! note "What's measured"
-    Times measure the core algorithm only (no NIfTI file I/O) for a fair
-    comparison.
+### Colin 1998
 
-## Optimization techniques
+| Format | Size | Ratio |
+|--------|------|-------|
+| Uncompressed NIfTI | 27.1 MB | 1.0× |
+| NIfTI + gzip | 22.9 MB | 1.2× |
+| **JVol lossless** | **22.9 MB** | **1.2×** |
+| JVol lossy q=100 | 2.9 MB | 9.3× |
+| JVol lossy q=80 | 1.4 MB | 19.7× |
+| JVol lossy q=60 | 568 KB | 48.9× |
+| JVol lossy q=40 | 189 KB | 146.9× |
+| JVol lossy q=20 | 56.6 KB | 490.5× |
 
-The Rust implementation uses several layers of optimization to achieve
-these results.
+### Colin 2008
 
-### 1. Zero per-block heap allocations
+| Format | Size | Ratio |
+|--------|------|-------|
+| Uncompressed NIfTI | 217.0 MB | 1.0× |
+| NIfTI + gzip | 98.1 MB | 2.2× |
+| **JVol lossless** | **106.8 MB** | **2.0×** |
+| JVol lossy q=100 | 11.3 MB | 19.1× |
+| JVol lossy q=80 | 4.8 MB | 44.8× |
+| JVol lossy q=60 | 1.7 MB | 125.6× |
+| JVol lossy q=40 | 642 KB | 346.1× |
+| JVol lossy q=20 | 218 KB | 1017.7× |
 
-The original approach allocated multiple `Vec` buffers for every block
-(~15K blocks for the standard volume, ~56K for hires). Each block
-triggered allocations for DCT scratch buffers, quantized output, and
-intermediate results — adding up to hundreds of MB of malloc/free churn.
+### FPG T1
 
-The optimized version uses `rayon::for_each_init` to create **one set of
-scratch buffers per thread** that are reused across all blocks processed
-by that thread:
+| Format | Size | Ratio |
+|--------|------|-------|
+| Uncompressed NIfTI | 22.0 MB | 1.0× |
+| NIfTI + gzip | 10.4 MB | 2.1× |
+| **JVol lossless** | **14.0 MB** | **1.6×** |
+| JVol lossy q=100 | 5.2 MB | 4.3× |
+| JVol lossy q=80 | 2.7 MB | 8.2× |
+| JVol lossy q=60 | 1.2 MB | 18.8× |
+| JVol lossy q=40 | 364 KB | 62.0× |
+| JVol lossy q=20 | 74.1 KB | 304.1× |
 
-```rust
-quantized_flat
-    .par_chunks_mut(bt)
-    .enumerate()
-    .for_each_init(
-        || DctScratch::new(block_shape, &plans),
-        |scratch, (idx, out)| {
-            // scratch.block_buf, scratch.temp_i, etc. are reused
-            // across all blocks on this thread
-        },
-    );
-```
+## Speed
 
-### 2. Fused normalize + pad + extract
+### Algorithm-only times
 
-The original code made three full passes over the data:
+Core encode/decode times excluding all file I/O (NIfTI reading/writing,
+gzip, zstd):
 
-1. Copy array → normalized array
-2. Copy normalized → padded array
-3. Split padded → individual block `Vec`s
+| Image | Mode | Encode | Decode |
+|-------|------|--------|--------|
+| Colin 1998 | Lossless | 23 ms | 20 ms |
+| Colin 1998 | Lossy q=60 | 75 ms | 69 ms |
+| Colin 2008 | Lossless | 325 ms | 616 ms |
+| Colin 2008 | Lossy q=60 | 835 ms | 439 ms |
+| FPG T1 | Lossless | 116 ms | 180 ms |
+| FPG T1 | Lossy q=60 | 139 ms | 135 ms |
 
-The optimized version does all three in one step: block data is extracted
-directly from the source array with on-the-fly normalization and
-implicit zero-padding (out-of-bounds indices return a pre-computed
-padding value):
+### End-to-end times
 
-```rust
-buf[flat] = if gi < shape[0] && gj < shape[1] && gk < shape[2] {
-    (array[[gi, gj, gk]] - intercept) * inv_slope - 128.0
-} else {
-    pad_val  // pre-computed normalized padding value
-};
-```
+Full pipeline including NIfTI I/O and entropy coding.
 
-This eliminates ~180 MB of intermediate allocations for the hires volume.
+Decode times depend on the output format: writing `.nii.gz` requires
+gzip recompression, which dominates the total time.
 
-### 3. In-place DCT with reusable scratch
+| Image | Mode | Encode | Decode (.nii) | Decode (.nii.gz) |
+|-------|------|--------|---------------|------------------|
+| Colin 1998 | Lossless | 1.24 s | 0.20 s | 1.26 s |
+| Colin 1998 | Lossy q=60 | 0.48 s | — | 1.24 s |
+| Colin 2008 | Lossless | 7.55 s | 1.49 s | 11.14 s |
+| Colin 2008 | Lossy q=60 | 4.04 s | — | 10.05 s |
+| FPG T1 | Lossless | 1.44 s | 0.39 s | 5.48 s |
+| FPG T1 | Lossy q=60 | 0.54 s | — | 1.95 s |
 
-The DCT operates directly on `scratch.block_buf` rather than allocating a
-new `Vec` per block. Scratch buffers for the 1D DCT transforms
-(`scratch_i/j/k`, `temp_i/j`) are also reused across blocks.
+!!! tip "For fastest decode, write to `.nii`"
+    Decoding to uncompressed `.nii` avoids gzip recompression and is
+    **5–7× faster** than writing `.nii.gz`.
 
-### 4. Fused dequantize + sequence reconstruction (decode)
+### Comparison with gzip
 
-Instead of first reconstructing `Vec<Vec<i32>>` blocks from DC/AC
-sequences and then dequantizing each block, the decode path writes
-dequantized `f64` values directly into a single flat buffer:
+| Image | gzip compress | gzip decompress |
+|-------|---------------|-----------------|
+| Colin 1998 | 1.40 s | 0.14 s |
+| Colin 2008 | 9.81 s | 0.90 s |
+| FPG T1 | 2.05 s | 0.10 s |
 
-```rust
-for (b, &dc) in dc_sequence.iter().enumerate() {
-    block_data[b * bt] = dc as f64 * quantization_table[0] as f64;
-}
-```
+## Notes
 
-### 5. Direct assembly without crop (decode)
+### Lossless compression on float data
 
-The original decode path allocated a full padded array, wrote all blocks
-into it, ran a rescaling pass, then copied the cropped region. The
-optimized version writes rescaled values directly into the target-sized
-output array, skipping padded voxels entirely:
+The Colin volumes use `float32` data with a NIfTI intensity scaling
+factor (`scl_slope`), resulting in non-integer values with high entropy.
+General-purpose compressors like gzip and zstd achieve only ~2× on this
+data. JVol lossless matches gzip for float data and can outperform it
+on integer-typed volumes (e.g., `int16`, `uint8`) where the 3D Lorenzo
+predictor exploits spatial correlation.
 
-```rust
-let i_end = (i0 + bs).min(target_shape[0]);
-// ...
-array[[gi, gj, gk]] = v * scale + offset;
-```
+### No block size parameter
 
-### 6. Buffered NIfTI I/O
-
-NIfTI writes previously called `write_f32` for each individual voxel
-(~57M calls through a `GzEncoder`). Now all voxel data is converted to a
-byte buffer first, then written in a single `write_all` call.
-
-### 7. Pre-planned DCT shared via Arc
-
-DCT plans are computed once and shared across rayon threads via `Arc`,
-eliminating per-block FFT planning overhead.
-
-### 8. Single-pass min/max
-
-Two separate folds over the array for min and max are combined into one.
-
-### 9. Release profile with LTO
-
-Link-time optimization is enabled in the release profile for maximum
-cross-crate inlining.
+Unlike block-based codecs (e.g., JPEG), JVol's wavelet codec operates
+on the **full 3D volume** without spatial blocking. This eliminates
+block artifacts and allows the wavelet transform to capture correlations
+across the entire volume. The quality parameter (1–100) controls the
+quantization step size.
 
 ## Reproducing
 
 ```bash
-cargo build --release
-./target/release/jvol-rust bench ~/.cache/torchio/mni_colin27_2008_nifti/colin27_t1_tal_hires.nii.gz
+# Build optimized binary
+mise run build
+
+# Algorithm-only benchmark
+./target/release/jvol-rust bench <input.nii.gz> -q 60
+./target/release/jvol-rust bench <input.nii.gz> --lossless
+
+# End-to-end encode/decode
+uv run jvol encode input.nii.gz output.jvol -q 60 -v
+uv run jvol decode output.jvol decoded.nii -v
 ```
