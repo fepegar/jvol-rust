@@ -41,19 +41,27 @@ impl JvolDtype {
     }
 }
 
-/// Run-length encoded data: parallel arrays of values and counts.
+/// One Rice-coded subband within an encoded channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RleData {
-    pub values: Vec<i32>,
-    pub counts: Vec<u32>,
+pub struct EncodedSubband {
+    /// Rice parameter k used for this subband.
+    pub rice_k: u8,
+    /// Number of coefficient values in this subband.
+    pub num_values: u32,
+    /// Rice-coded bitstream bytes.
+    pub data: Vec<u8>,
 }
 
 /// One encoded channel of a volume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncodedChannel {
-    pub rle: RleData,
+    /// Per-subband Rice-coded data (ordered: coarsest detail first, approximation last).
+    pub subbands: Vec<EncodedSubband>,
+    /// Normalization intercept (lossy only; min value of original data).
     pub intercept: f64,
+    /// Normalization slope (lossy only; max - min of original data).
     pub slope: f64,
+    /// Quantization step (lossy only; computed from quality).
     pub step: f64,
 }
 

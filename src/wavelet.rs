@@ -350,7 +350,12 @@ mod tests {
         dwt1d_forward(&mut data, &mut temp, WaveletType::LeGall53);
         dwt1d_inverse(&mut data, &mut temp, WaveletType::LeGall53);
         for (a, b) in original.iter().zip(data.iter()) {
-            assert!((a - b).abs() < 1e-10, "5/3 roundtrip failed: {} != {}", a, b);
+            assert!(
+                (a - b).abs() < 1e-10,
+                "5/3 roundtrip failed: {} != {}",
+                a,
+                b
+            );
         }
     }
 
@@ -362,15 +367,19 @@ mod tests {
         dwt1d_forward(&mut data, &mut temp, WaveletType::CDF97);
         dwt1d_inverse(&mut data, &mut temp, WaveletType::CDF97);
         for (a, b) in original.iter().zip(data.iter()) {
-            assert!((a - b).abs() < 1e-10, "9/7 roundtrip failed: {} != {}", a, b);
+            assert!(
+                (a - b).abs() < 1e-10,
+                "9/7 roundtrip failed: {} != {}",
+                a,
+                b
+            );
         }
     }
 
     #[test]
     fn test_53_roundtrip_3d() {
-        let original = Array3::from_shape_fn((16, 16, 16), |(i, j, k)| {
-            (i * 100 + j * 10 + k) as f64
-        });
+        let original =
+            Array3::from_shape_fn((16, 16, 16), |(i, j, k)| (i * 100 + j * 10 + k) as f64);
         let mut data = original.clone();
         dwt3d_forward(&mut data, WaveletType::LeGall53, 3);
         dwt3d_inverse(&mut data, WaveletType::LeGall53, 3);
@@ -381,9 +390,8 @@ mod tests {
 
     #[test]
     fn test_97_roundtrip_3d() {
-        let original = Array3::from_shape_fn((16, 16, 16), |(i, j, k)| {
-            (i * 100 + j * 10 + k) as f64
-        });
+        let original =
+            Array3::from_shape_fn((16, 16, 16), |(i, j, k)| (i * 100 + j * 10 + k) as f64);
         let mut data = original.clone();
         dwt3d_forward(&mut data, WaveletType::CDF97, 3);
         dwt3d_inverse(&mut data, WaveletType::CDF97, 3);
@@ -394,9 +402,8 @@ mod tests {
 
     #[test]
     fn test_odd_dimensions() {
-        let original = Array3::from_shape_fn((15, 17, 13), |(i, j, k)| {
-            (i * 100 + j * 10 + k) as f64
-        });
+        let original =
+            Array3::from_shape_fn((15, 17, 13), |(i, j, k)| (i * 100 + j * 10 + k) as f64);
         let mut data = original.clone();
         dwt3d_forward(&mut data, WaveletType::LeGall53, 2);
         dwt3d_inverse(&mut data, WaveletType::LeGall53, 2);

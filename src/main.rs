@@ -7,7 +7,9 @@ use nifti::NiftiObject;
 use jvol_rust::cli::{Cli, Commands};
 use jvol_rust::decoding::decode_array;
 use jvol_rust::encoding::encode_array;
-use jvol_rust::io::{decode_jvol_to_nifti, dtype_from_nifti_code, encode_nifti_to_jvol, read_nifti};
+use jvol_rust::io::{
+    decode_jvol_to_nifti, dtype_from_nifti_code, encode_nifti_to_jvol, read_nifti,
+};
 
 fn main() {
     let cli = Cli::parse();
@@ -107,7 +109,6 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Read NIfTI (not timed)
             eprintln!("Loading NIfTI file...");
             let (channels, _affine) = read_nifti(input_path).unwrap_or_else(|e| {
                 eprintln!("Error reading NIfTI: {}", e);
@@ -133,15 +134,25 @@ fn main() {
 
             // Time encode only (first channel)
             let enc_start = Instant::now();
-            let result = encode_array(&channels[0].view(), quality);
+            let result = encode_array(&channels[0].view(), quality, nifti_dtype);
             let enc_elapsed = enc_start.elapsed();
 
             let target_shape = [shape[0], shape[1], shape[2]];
 
+            // Report encoded size
+            let encoded_bytes: usize = result.subbands.iter().map(|s| s.data.len()).sum();
+            let raw_bytes = shape[0] * shape[1] * shape[2] * 4; // i32 per voxel
+            eprintln!(
+                "Encoded: {} bytes (from {} raw, {:.1}x)",
+                encoded_bytes,
+                raw_bytes,
+                raw_bytes as f64 / encoded_bytes as f64,
+            );
+
             // Time decode only
             let dec_start = Instant::now();
             let _decoded = decode_array(
-                &result.rle,
+                &result.subbands,
                 target_shape,
                 result.wavelet,
                 result.levels,
@@ -153,7 +164,6 @@ fn main() {
             );
             let dec_elapsed = dec_start.elapsed();
 
-            // Output: encode_time decode_time
             println!(
                 "{:.6} {:.6}",
                 enc_elapsed.as_secs_f64(),

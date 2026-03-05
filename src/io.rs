@@ -2,7 +2,6 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use ndarray::Array3;
@@ -33,7 +32,6 @@ pub fn read_nifti(
             [0.0, 0.0, 0.0, 1.0],
         ]
     } else if header.qform_code > 0 {
-        // Use quaternion-based method (method 2)
         let b = header.quatern_b as f64;
         let c = header.quatern_c as f64;
         let d = header.quatern_d as f64;
@@ -82,7 +80,6 @@ pub fn read_nifti(
             [0.0, 0.0, 0.0, 1.0],
         ]
     } else {
-        // Identity with pixdim scaling
         let pixdim = &header.pixdim;
         [
             [pixdim[1] as f64, 0.0, 0.0, 0.0],
@@ -100,7 +97,6 @@ pub fn read_nifti(
         return Err("Expected at least 3 dimensions".into());
     }
 
-    // The nifti crate returns Fortran-order (column-major) ndarray.
     let channels = if ndim == 3 {
         let array = ndarray_data
             .into_dimensionality::<ndarray::Ix3>()
@@ -109,7 +105,6 @@ pub fn read_nifti(
             .into_owned();
         vec![array]
     } else {
-        // 4D: shape is [ni, nj, nk, nc]
         let shape = ndarray_data.shape().to_vec();
         let nc = shape[3];
         let standard = ndarray_data.as_standard_layout().into_owned();
@@ -118,9 +113,7 @@ pub fn read_nifti(
         let nk = shape[2];
         (0..nc)
             .map(|c| {
-                Array3::from_shape_fn((ni, nj, nk), |(i, j, k)| {
-                    standard[[i, j, k, c].as_ref()]
-                })
+                Array3::from_shape_fn((ni, nj, nk), |(i, j, k)| standard[[i, j, k, c].as_ref()])
             })
             .collect()
     };
@@ -129,7 +122,6 @@ pub fn read_nifti(
 }
 
 /// Write one or more 3D channels as a NIfTI file.
-/// Single channel → 3D; multiple channels → 4D.
 pub fn write_nifti(
     channels: &[Array3<f64>],
     affine: &Affine4x4,
@@ -146,30 +138,25 @@ pub fn write_nifti(
     let nc = channels.len();
     let ndim = if nc > 1 { 4 } else { 3 };
 
-    // Build a minimal NIfTI-1 header (348 bytes)
     let mut header = vec![0u8; 348];
     let mut cursor = std::io::Cursor::new(&mut header[..]);
 
-    // sizeof_hdr
     cursor.write_i32::<LittleEndian>(348)?;
 
-    // dim (offset 40)
     cursor.set_position(40);
     cursor.write_i16::<LittleEndian>(ndim as i16)?;
     cursor.write_i16::<LittleEndian>(ni as i16)?;
     cursor.write_i16::<LittleEndian>(nj as i16)?;
     cursor.write_i16::<LittleEndian>(nk as i16)?;
-    cursor.write_i16::<LittleEndian>(nc as i16)?; // dim[4]
-    cursor.write_i16::<LittleEndian>(1)?; // dim[5]
-    cursor.write_i16::<LittleEndian>(1)?; // dim[6]
-    cursor.write_i16::<LittleEndian>(1)?; // dim[7]
+    cursor.write_i16::<LittleEndian>(nc as i16)?;
+    cursor.write_i16::<LittleEndian>(1)?;
+    cursor.write_i16::<LittleEndian>(1)?;
+    cursor.write_i16::<LittleEndian>(1)?;
 
-    // datatype (offset 70)
     cursor.set_position(70);
     cursor.write_i16::<LittleEndian>(16)?; // DT_FLOAT32
     cursor.write_i16::<LittleEndian>(32)?; // bitpix
 
-    // pixdim (offset 76) — column norms of the rotation/scaling submatrix
     cursor.set_position(76);
     cursor.write_f32::<LittleEndian>(1.0)?; // qfac
     #[allow(clippy::needless_range_loop)]
@@ -181,15 +168,12 @@ pub fn write_nifti(
         cursor.write_f32::<LittleEndian>(pixdim_val)?;
     }
 
-    // vox_offset (offset 108)
     cursor.set_position(108);
     cursor.write_f32::<LittleEndian>(352.0)?;
 
-    // sform_code (offset 254)
     cursor.set_position(254);
-    cursor.write_i16::<LittleEndian>(1)?; // NIFTI_XFORM_SCANNER_ANAT
+    cursor.write_i16::<LittleEndian>(1)?;
 
-    // srow_x (offset 280), srow_y (offset 296), srow_z (offset 312)
     cursor.set_position(280);
     for row in &affine[..3] {
         for &val in row {
@@ -197,11 +181,10 @@ pub fn write_nifti(
         }
     }
 
-    // magic (offset 344)
     cursor.set_position(344);
     cursor.write_all(b"n+1\0")?;
 
-    // NIfTI stores data in Fortran order (first dimension varies fastest)
+    // NIfTI stores data in Fortran order
     let total_voxels = ni * nj * nk * nc;
     let mut data_buf: Vec<u8> = Vec::with_capacity(total_voxels * 4);
     for ch in &channels[..nc] {
@@ -248,24 +231,25 @@ pub fn dtype_from_nifti_code(datatype: i16) -> JvolDtype {
         16 => JvolDtype::F32,
         64 => JvolDtype::F64,
         512 => JvolDtype::U16,
-        _ => JvolDtype::F64, // fallback
+        _ => JvolDtype::F64,
     }
 }
 
-/// Save an encoded volume to a .jvol file (custom binary format).
+/// Save an encoded volume to a .jvol file (bincode + zstd).
 pub fn save_jvol(encoded: &EncodedVolume, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let serialized = bincode::serialize(encoded)?;
     let file = File::create(path)?;
-    let mut gz = GzEncoder::new(BufWriter::new(file), Compression::default());
-    gz.write_all(&serialized)?;
-    gz.finish()?;
+    // Level 6 balances compression ratio and speed well for our data
+    let mut encoder = zstd::Encoder::new(BufWriter::new(file), 6)?;
+    encoder.write_all(&serialized)?;
+    encoder.finish()?;
     Ok(())
 }
 
-/// Load an encoded volume from a .jvol file.
+/// Load an encoded volume from a .jvol file (bincode + zstd).
 pub fn open_jvol(path: &Path) -> Result<EncodedVolume, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
-    let mut decoder = GzDecoder::new(BufReader::new(file));
+    let mut decoder = zstd::Decoder::new(BufReader::new(file))?;
     let mut buf = Vec::new();
     decoder.read_to_end(&mut buf)?;
     let encoded: EncodedVolume = bincode::deserialize(&buf)?;
@@ -293,11 +277,11 @@ pub fn encode_nifti_to_jvol(
     let mut levels = 0;
 
     for ch in &channels {
-        let result = encode_array(&ch.view(), quality);
+        let result = encode_array(&ch.view(), quality, nifti_dtype);
         wavelet = result.wavelet;
         levels = result.levels;
         encoded_channels.push(EncodedChannel {
-            rle: result.rle,
+            subbands: result.subbands,
             intercept: result.intercept,
             slope: result.slope,
             step: result.step,
@@ -332,7 +316,7 @@ pub fn decode_jvol_to_nifti(
     let mut channels = Vec::with_capacity(encoded.channels.len());
     for ch in &encoded.channels {
         let array = decode_array(
-            &ch.rle,
+            &ch.subbands,
             meta.shape,
             meta.wavelet,
             meta.levels,
