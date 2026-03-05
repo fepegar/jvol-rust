@@ -15,8 +15,11 @@ description = "Auto-format code"
 run = "cargo fmt"
 
 [tasks.build]
-description = "Build release binary"
-run = "cargo build --release"
+description = "Build release binary and Python package"
+run = """
+cargo build --release
+uv run --with maturin maturin develop --release
+"""
 
 [tasks."python:develop"]
 description = "Install Python package in development mode"
