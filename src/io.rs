@@ -180,27 +180,32 @@ pub fn write_nifti(
         .unwrap_or(false);
 
     // NIfTI stores data in Fortran order (first dimension varies fastest)
-    let write_data = |writer: &mut dyn Write| -> Result<(), Box<dyn std::error::Error>> {
-        writer.write_all(&header)?;
-        writer.write_all(&[0u8; 4])?; // 4-byte extension pad
-        for k in 0..nk {
-            for j in 0..nj {
-                for i in 0..ni {
-                    writer.write_f32::<LittleEndian>(array[[i, j, k]] as f32)?;
-                }
+    // Buffer all voxel data as bytes first, then write in one call
+    let total_voxels = ni * nj * nk;
+    let mut data_buf: Vec<u8> = Vec::with_capacity(total_voxels * 4);
+    for k in 0..nk {
+        for j in 0..nj {
+            for i in 0..ni {
+                data_buf.extend_from_slice(&(array[[i, j, k]] as f32).to_le_bytes());
             }
         }
+    }
+
+    let write_all = |writer: &mut dyn Write| -> Result<(), Box<dyn std::error::Error>> {
+        writer.write_all(&header)?;
+        writer.write_all(&[0u8; 4])?;
+        writer.write_all(&data_buf)?;
         Ok(())
     };
 
     if is_gz {
         let file = File::create(path)?;
         let mut gz = GzEncoder::new(BufWriter::new(file), Compression::default());
-        write_data(&mut gz)?;
+        write_all(&mut gz)?;
         gz.finish()?;
     } else {
         let mut file = BufWriter::new(File::create(path)?);
-        write_data(&mut file)?;
+        write_all(&mut file)?;
     }
 
     Ok(())

@@ -35,6 +35,28 @@ impl IdctPlans {
     }
 }
 
+/// Reusable scratch buffers for inverse DCT (one per rayon thread).
+struct IdctScratch {
+    scratch_i: Vec<f64>,
+    scratch_j: Vec<f64>,
+    scratch_k: Vec<f64>,
+    temp_i: Vec<f64>,
+    temp_j: Vec<f64>,
+}
+
+impl IdctScratch {
+    fn new(block_shape: BlockShape, plans: &IdctPlans) -> Self {
+        let [si, sj, _sk] = block_shape;
+        Self {
+            scratch_i: vec![0.0; plans.scratch_len_i],
+            scratch_j: vec![0.0; plans.scratch_len_j],
+            scratch_k: vec![0.0; plans.scratch_len_k],
+            temp_i: vec![0.0; si],
+            temp_j: vec![0.0; sj],
+        }
+    }
+}
+
 /// Decode RLE-compressed DC and AC sequences back into a 3D array.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_array(
@@ -47,57 +69,137 @@ pub fn decode_array(
     slope: f64,
     dtype: JvolDtype,
 ) -> Array3<f64> {
-    // RLE decode
     let dc_sequence = run_length_decode(dc_rle);
     let ac_sequence = run_length_decode(ac_rle);
 
-    // Reconstruct blocks
     let scan_indices = get_scan_indices(block_shape);
-    let blocks = sequence_to_blocks(&dc_sequence, &ac_sequence, &scan_indices, block_shape);
+    let bs = block_shape[0];
+    let bt = bs * bs * bs;
+    let num_blocks = dc_sequence.len();
 
-    // Pre-plan iDCT
+    // Pre-allocate flat buffer and fill with dequantized values (fused)
+    let [_si, sj, sk] = block_shape;
+    let mut block_data: Vec<f64> = vec![0.0; num_blocks * bt];
+
+    // DC component
+    for (b, &dc) in dc_sequence.iter().enumerate() {
+        block_data[b * bt] = dc as f64 * quantization_table[0] as f64;
+    }
+
+    // AC components — dequantize during placement
+    for (scan_pos, idx) in scan_indices[1..].iter().enumerate() {
+        let flat_idx = idx[0] * sj * sk + idx[1] * sk + idx[2];
+        let q = quantization_table[flat_idx] as f64;
+        let ac_offset = scan_pos * num_blocks;
+        for b in 0..num_blocks {
+            block_data[b * bt + flat_idx] = ac_sequence[ac_offset + b] as f64 * q;
+        }
+    }
+
+    // Parallel iDCT in-place with thread-local scratch
     let plans = IdctPlans::new(block_shape);
+    block_data
+        .par_chunks_mut(bt)
+        .for_each_init(
+            || IdctScratch::new(block_shape, &plans),
+            |scratch, block| {
+                idct3d_inplace(block, block_shape, &plans, scratch);
+            },
+        );
 
-    // Parallel dequantize + inverse DCT
-    let reconstructed_blocks: Vec<Vec<f64>> = blocks
-        .par_iter()
-        .map(|block| {
-            let dequantized: Vec<f64> = block
-                .iter()
-                .zip(quantization_table.iter())
-                .map(|(&v, &q)| v as f64 * q as f64)
-                .collect();
-            idct3d_with_plans(&dequantized, block_shape, &plans)
-        })
-        .collect();
+    // Direct assembly with rescaling — no intermediate padded array, no crop copy
+    let ps = padded_shape(target_shape, block_shape);
+    let nj_b = ps[1] / bs;
+    let nk_b = ps[2] / bs;
+    let scale = slope / 255.0;
+    let offset = 128.0 * scale + intercept;
 
-    // Reassemble blocks into volume
-    let padded = padded_shape(target_shape, block_shape);
-    let mut array = assemble_blocks(&reconstructed_blocks, padded, block_shape);
+    let mut array = Array3::<f64>::zeros((target_shape[0], target_shape[1], target_shape[2]));
 
-    // Rescale: undo the [-128, 127] normalization
-    array.mapv_inplace(|v| {
-        let rescaled = (v + 128.0) / 255.0;
-        rescaled * slope + intercept
-    });
+    for idx in 0..num_blocks {
+        let bi = idx / (nj_b * nk_b);
+        let rem = idx % (nj_b * nk_b);
+        let bj = rem / nk_b;
+        let bk = rem % nk_b;
 
-    // Crop to original shape
-    let cropped = array
-        .slice(ndarray::s![
-            ..target_shape[0],
-            ..target_shape[1],
-            ..target_shape[2]
-        ])
-        .to_owned();
+        let i0 = bi * bs;
+        let j0 = bj * bs;
+        let k0 = bk * bs;
+        let block = &block_data[idx * bt..(idx + 1) * bt];
+
+        let i_end = (i0 + bs).min(target_shape[0]);
+        let j_end = (j0 + bs).min(target_shape[1]);
+        let k_end = (k0 + bs).min(target_shape[2]);
+
+        for gi in i0..i_end {
+            for gj in j0..j_end {
+                for gk in k0..k_end {
+                    let li = gi - i0;
+                    let lj = gj - j0;
+                    let lk = gk - k0;
+                    let v = block[li * bs * bs + lj * bs + lk];
+                    array[[gi, gj, gk]] = v * scale + offset;
+                }
+            }
+        }
+    }
 
     // Clip to dtype range if integer
     if let Some((min_val, max_val)) = dtype.iinfo() {
-        let mut result = cropped;
-        result.mapv_inplace(|v| v.max(min_val).min(max_val));
-        return result;
+        array.mapv_inplace(|v| v.max(min_val).min(max_val));
     }
 
-    cropped
+    array
+}
+
+/// 3D inverse DCT (DCT-III) in-place using reusable scratch buffers.
+fn idct3d_inplace(
+    data: &mut [f64],
+    block_shape: BlockShape,
+    plans: &IdctPlans,
+    scratch: &mut IdctScratch,
+) {
+    let [si, sj, sk] = block_shape;
+
+    // iDCT along axis 0 (i)
+    for j in 0..sj {
+        for k in 0..sk {
+            for i in 0..si {
+                scratch.temp_i[i] = data[i * sj * sk + j * sk + k];
+            }
+            plans
+                .dct3_i
+                .process_dct3_with_scratch(&mut scratch.temp_i, &mut scratch.scratch_i);
+            for i in 0..si {
+                data[i * sj * sk + j * sk + k] = scratch.temp_i[i];
+            }
+        }
+    }
+
+    // iDCT along axis 1 (j)
+    for i in 0..si {
+        for k in 0..sk {
+            for j in 0..sj {
+                scratch.temp_j[j] = data[i * sj * sk + j * sk + k];
+            }
+            plans
+                .dct3_j
+                .process_dct3_with_scratch(&mut scratch.temp_j, &mut scratch.scratch_j);
+            for j in 0..sj {
+                data[i * sj * sk + j * sk + k] = scratch.temp_j[j];
+            }
+        }
+    }
+
+    // iDCT along axis 2 (k) — contiguous in memory
+    for i in 0..si {
+        for j in 0..sj {
+            let off = i * sj * sk + j * sk;
+            plans
+                .dct3_k
+                .process_dct3_with_scratch(&mut data[off..off + sk], &mut scratch.scratch_k);
+        }
+    }
 }
 
 /// Expand RLE data back into a flat sequence.
@@ -110,124 +212,6 @@ pub fn run_length_decode(rle: &RleData) -> Vec<i32> {
         }
     }
     result
-}
-
-/// Reconstruct 3D blocks from DC and AC sequences using scan ordering.
-fn sequence_to_blocks(
-    dc_sequence: &[i32],
-    ac_sequence: &[i32],
-    scan_indices: &[[usize; 3]],
-    block_shape: BlockShape,
-) -> Vec<Vec<i32>> {
-    let [_si, sj, sk] = block_shape;
-    let block_size = scan_indices.len();
-    let num_blocks = dc_sequence.len();
-
-    let mut blocks: Vec<Vec<i32>> = vec![vec![0i32; block_size]; num_blocks];
-
-    // DC component
-    for (b, &dc) in dc_sequence.iter().enumerate() {
-        blocks[b][0] = dc;
-    }
-
-    // AC components
-    for (scan_pos, idx) in scan_indices[1..].iter().enumerate() {
-        let flat_idx = idx[0] * sj * sk + idx[1] * sk + idx[2];
-        let ac_offset = scan_pos * num_blocks;
-        for b in 0..num_blocks {
-            blocks[b][flat_idx] = ac_sequence[ac_offset + b];
-        }
-    }
-
-    blocks
-}
-
-/// Compute 3D inverse DCT (DCT-III) using pre-planned objects.
-fn idct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &IdctPlans) -> Vec<f64> {
-    let [si, sj, sk] = block_shape;
-    let mut data = block.to_vec();
-
-    let mut scratch_i = vec![0.0f64; plans.scratch_len_i];
-    let mut scratch_j = vec![0.0f64; plans.scratch_len_j];
-    let mut scratch_k = vec![0.0f64; plans.scratch_len_k];
-    let mut temp_i = vec![0.0f64; si];
-    let mut temp_j = vec![0.0f64; sj];
-
-    // iDCT along axis 0 (i)
-    for j in 0..sj {
-        for k in 0..sk {
-            for i in 0..si {
-                temp_i[i] = data[i * sj * sk + j * sk + k];
-            }
-            plans
-                .dct3_i
-                .process_dct3_with_scratch(&mut temp_i, &mut scratch_i);
-            for i in 0..si {
-                data[i * sj * sk + j * sk + k] = temp_i[i];
-            }
-        }
-    }
-
-    // iDCT along axis 1 (j)
-    for i in 0..si {
-        for k in 0..sk {
-            for j in 0..sj {
-                temp_j[j] = data[i * sj * sk + j * sk + k];
-            }
-            plans
-                .dct3_j
-                .process_dct3_with_scratch(&mut temp_j, &mut scratch_j);
-            for j in 0..sj {
-                data[i * sj * sk + j * sk + k] = temp_j[j];
-            }
-        }
-    }
-
-    // iDCT along axis 2 (k) - contiguous in memory
-    for i in 0..si {
-        for j in 0..sj {
-            let offset = i * sj * sk + j * sk;
-            plans
-                .dct3_k
-                .process_dct3_with_scratch(&mut data[offset..offset + sk], &mut scratch_k);
-        }
-    }
-
-    data
-}
-
-/// Reassemble blocks into a 3D array.
-fn assemble_blocks(
-    blocks: &[Vec<f64>],
-    padded_shape: VolumeShape,
-    block_shape: BlockShape,
-) -> Array3<f64> {
-    let nj = padded_shape[1] / block_shape[1];
-    let nk = padded_shape[2] / block_shape[2];
-
-    let mut array = Array3::<f64>::zeros((padded_shape[0], padded_shape[1], padded_shape[2]));
-
-    for (idx, block) in blocks.iter().enumerate() {
-        let bi = idx / (nj * nk);
-        let remainder = idx % (nj * nk);
-        let bj = remainder / nk;
-        let bk = remainder % nk;
-
-        let i0 = bi * block_shape[0];
-        let j0 = bj * block_shape[1];
-        let k0 = bk * block_shape[2];
-
-        for li in 0..block_shape[0] {
-            for lj in 0..block_shape[1] {
-                for lk in 0..block_shape[2] {
-                    let flat_idx = li * block_shape[1] * block_shape[2] + lj * block_shape[2] + lk;
-                    array[[i0 + li, j0 + lj, k0 + lk]] = block[flat_idx];
-                }
-            }
-        }
-    }
-
-    array
 }
 
 #[cfg(test)]

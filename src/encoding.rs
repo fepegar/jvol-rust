@@ -44,133 +44,135 @@ impl DctPlans {
     }
 }
 
+/// Reusable scratch buffers for DCT computation (one per rayon thread).
+struct DctScratch {
+    scratch_i: Vec<f64>,
+    scratch_j: Vec<f64>,
+    scratch_k: Vec<f64>,
+    temp_i: Vec<f64>,
+    temp_j: Vec<f64>,
+    block_buf: Vec<f64>,
+}
+
+impl DctScratch {
+    fn new(block_shape: BlockShape, plans: &DctPlans) -> Self {
+        let [si, sj, sk] = block_shape;
+        Self {
+            scratch_i: vec![0.0; plans.scratch_len_i],
+            scratch_j: vec![0.0; plans.scratch_len_j],
+            scratch_k: vec![0.0; plans.scratch_len_k],
+            temp_i: vec![0.0; si],
+            temp_j: vec![0.0; sj],
+            block_buf: vec![0.0; si * sj * sk],
+        }
+    }
+}
+
 /// Encode a 3D array into compressed DC and AC RLE sequences.
 pub fn encode_array(array: &ArrayView3<f64>, block_size: usize, quality: u8) -> EncodeResult {
     let block_shape: BlockShape = [block_size, block_size, block_size];
     let quantization_table = get_quantization_table(block_shape, quality);
+    let bs = block_size;
+    let bt = bs * bs * bs;
 
-    // Normalize intensities to [0, 255] then shift to [-128, 127]
-    let min_val = array.iter().copied().fold(f64::INFINITY, f64::min);
-    let max_val = array.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // Single-pass min/max
+    let (min_val, max_val) = array.iter().fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(mn, mx), &v| (mn.min(v), mx.max(v)),
+    );
     let intercept = min_val;
     let slope = max_val - min_val;
-
-    let mut normalized = array.to_owned();
-    if slope > 0.0 {
-        normalized.mapv_inplace(|v| ((v - intercept) / slope) * 255.0 - 128.0);
+    let inv_slope = if slope > 0.0 { 255.0 / slope } else { 0.0 };
+    let pad_val = if slope > 0.0 {
+        -intercept * inv_slope - 128.0
     } else {
-        normalized.mapv_inplace(|_| 0.0);
-    }
+        0.0
+    };
 
-    let padded = pad_array(&normalized.view(), block_shape);
-    let blocks = split_into_blocks(&padded, block_shape);
+    let shape = [array.shape()[0], array.shape()[1], array.shape()[2]];
+    let ps = padded_shape(shape, block_shape);
+    let ni = ps[0] / bs;
+    let nj = ps[1] / bs;
+    let nk = ps[2] / bs;
+    let num_blocks = ni * nj * nk;
 
-    // Pre-plan DCT (shared across threads via Arc)
     let plans = DctPlans::new(block_shape);
 
-    // Parallel DCT + quantize in one pass
-    let quantized_blocks: Vec<Vec<i32>> = blocks
-        .par_iter()
-        .map(|block| {
-            let data = dct3d_with_plans(block, block_shape, &plans);
-            data.iter()
-                .zip(quantization_table.iter())
-                .map(|(&v, &q)| (v / q as f64).round() as i32)
-                .collect()
-        })
-        .collect();
+    // Pre-allocate flat output for all quantized blocks
+    let mut quantized_flat: Vec<i32> = vec![0; num_blocks * bt];
 
-    // Generate scan indices (zigzag by distance from origin)
+    // Process blocks in parallel with thread-local scratch buffers
+    quantized_flat
+        .par_chunks_mut(bt)
+        .enumerate()
+        .for_each_init(
+            || DctScratch::new(block_shape, &plans),
+            |scratch, (idx, out)| {
+                let bi = idx / (nj * nk);
+                let rem = idx % (nj * nk);
+                let bj = rem / nk;
+                let bk = rem % nk;
+
+                let i0 = bi * bs;
+                let j0 = bj * bs;
+                let k0 = bk * bs;
+
+                // Extract block with on-the-fly normalization and zero-padding
+                let buf = &mut scratch.block_buf;
+                for li in 0..bs {
+                    let gi = i0 + li;
+                    for lj in 0..bs {
+                        let gj = j0 + lj;
+                        for lk in 0..bs {
+                            let gk = k0 + lk;
+                            let flat = li * bs * bs + lj * bs + lk;
+                            buf[flat] =
+                                if gi < shape[0] && gj < shape[1] && gk < shape[2] {
+                                    (array[[gi, gj, gk]] - intercept) * inv_slope - 128.0
+                                } else {
+                                    pad_val
+                                };
+                        }
+                    }
+                }
+
+                // In-place 3D DCT using reusable scratch
+                dct3d_inplace(block_shape, &plans, scratch);
+
+                // Quantize directly into pre-allocated output
+                let buf = &scratch.block_buf;
+                for i in 0..bt {
+                    out[i] = (buf[i] / quantization_table[i] as f64).round() as i32;
+                }
+            },
+        );
+
+    // Build DC/AC sequences from flat buffer
     let scan_indices = get_scan_indices(block_shape);
-
-    // Separate DC and AC components
-    let (dc_sequence, ac_sequence) =
-        blocks_to_sequence(&quantized_blocks, &scan_indices, block_shape);
-
-    let dc_rle = run_length_encode(&dc_sequence);
-    let ac_rle = run_length_encode(&ac_sequence);
+    let (dc_seq, ac_seq) =
+        flat_blocks_to_sequence(&quantized_flat, &scan_indices, block_shape, num_blocks);
 
     EncodeResult {
-        dc_rle,
-        ac_rle,
+        dc_rle: run_length_encode(&dc_seq),
+        ac_rle: run_length_encode(&ac_seq),
         quantization_table,
         intercept,
         slope,
     }
 }
 
-/// Pad the array so each dimension is divisible by the block size.
-pub fn pad_array(array: &ArrayView3<f64>, block_shape: BlockShape) -> Array3<f64> {
-    let shape = array.shape();
-    let mut padded_shape = [0usize; 3];
-    let mut needs_padding = false;
-
-    for d in 0..3 {
-        let remainder = shape[d] % block_shape[d];
-        if remainder == 0 {
-            padded_shape[d] = shape[d];
-        } else {
-            padded_shape[d] = shape[d] + (block_shape[d] - remainder);
-            needs_padding = true;
-        }
-    }
-
-    if !needs_padding {
-        return array.to_owned();
-    }
-
-    let mut padded = Array3::<f64>::zeros((padded_shape[0], padded_shape[1], padded_shape[2]));
-    padded
-        .slice_mut(ndarray::s![..shape[0], ..shape[1], ..shape[2]])
-        .assign(array);
-    padded
-}
-
-/// Split a padded 3D array into non-overlapping blocks.
-pub fn split_into_blocks(array: &Array3<f64>, block_shape: BlockShape) -> Vec<Vec<f64>> {
-    let shape = array.shape();
-    let ni = shape[0] / block_shape[0];
-    let nj = shape[1] / block_shape[1];
-    let nk = shape[2] / block_shape[2];
-
-    let mut blocks = Vec::with_capacity(ni * nj * nk);
-    for bi in 0..ni {
-        for bj in 0..nj {
-            for bk in 0..nk {
-                let i0 = bi * block_shape[0];
-                let j0 = bj * block_shape[1];
-                let k0 = bk * block_shape[2];
-                let block_view = array.slice(ndarray::s![
-                    i0..i0 + block_shape[0],
-                    j0..j0 + block_shape[1],
-                    k0..k0 + block_shape[2]
-                ]);
-                blocks.push(block_view.iter().copied().collect());
-            }
-        }
-    }
-    blocks
-}
-
-/// Compute 3D DCT-II using pre-planned DCT objects.
-fn dct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &DctPlans) -> Vec<f64> {
+/// 3D DCT-II in-place on scratch.block_buf using reusable scratch buffers.
+fn dct3d_inplace(block_shape: BlockShape, plans: &DctPlans, scratch: &mut DctScratch) {
     let [si, sj, sk] = block_shape;
-    let mut data = block.to_vec();
 
-    // Thread-local scratch buffers
-    let mut scratch_k = vec![0.0f64; plans.scratch_len_k];
-    let mut scratch_j = vec![0.0f64; plans.scratch_len_j];
-    let mut scratch_i = vec![0.0f64; plans.scratch_len_i];
-    let mut temp_j = vec![0.0f64; sj];
-    let mut temp_i = vec![0.0f64; si];
-
-    // DCT along axis 2 (k) - contiguous in memory
+    // DCT along axis 2 (k) — contiguous in memory
     for i in 0..si {
         for j in 0..sj {
             let offset = i * sj * sk + j * sk;
-            plans
-                .dct2_k
-                .process_dct2_with_scratch(&mut data[offset..offset + sk], &mut scratch_k);
+            plans.dct2_k.process_dct2_with_scratch(
+                &mut scratch.block_buf[offset..offset + sk],
+                &mut scratch.scratch_k,
+            );
         }
     }
 
@@ -178,13 +180,13 @@ fn dct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &DctPlans) ->
     for i in 0..si {
         for k in 0..sk {
             for j in 0..sj {
-                temp_j[j] = data[i * sj * sk + j * sk + k];
+                scratch.temp_j[j] = scratch.block_buf[i * sj * sk + j * sk + k];
             }
             plans
                 .dct2_j
-                .process_dct2_with_scratch(&mut temp_j, &mut scratch_j);
+                .process_dct2_with_scratch(&mut scratch.temp_j, &mut scratch.scratch_j);
             for j in 0..sj {
-                data[i * sj * sk + j * sk + k] = temp_j[j];
+                scratch.block_buf[i * sj * sk + j * sk + k] = scratch.temp_j[j];
             }
         }
     }
@@ -193,18 +195,41 @@ fn dct3d_with_plans(block: &[f64], block_shape: BlockShape, plans: &DctPlans) ->
     for j in 0..sj {
         for k in 0..sk {
             for i in 0..si {
-                temp_i[i] = data[i * sj * sk + j * sk + k];
+                scratch.temp_i[i] = scratch.block_buf[i * sj * sk + j * sk + k];
             }
             plans
                 .dct2_i
-                .process_dct2_with_scratch(&mut temp_i, &mut scratch_i);
+                .process_dct2_with_scratch(&mut scratch.temp_i, &mut scratch.scratch_i);
             for i in 0..si {
-                data[i * sj * sk + j * sk + k] = temp_i[i];
+                scratch.block_buf[i * sj * sk + j * sk + k] = scratch.temp_i[i];
             }
         }
     }
+}
 
-    data
+/// Extract DC and AC sequences from a flat quantized buffer.
+fn flat_blocks_to_sequence(
+    quantized_flat: &[i32],
+    scan_indices: &[[usize; 3]],
+    block_shape: BlockShape,
+    num_blocks: usize,
+) -> (Vec<i32>, Vec<i32>) {
+    let [_si, sj, sk] = block_shape;
+    let bt = scan_indices.len();
+
+    let dc_seq: Vec<i32> = (0..num_blocks)
+        .map(|b| quantized_flat[b * bt])
+        .collect();
+
+    let mut ac_seq = Vec::with_capacity(num_blocks * (bt - 1));
+    for idx in &scan_indices[1..] {
+        let flat_idx = idx[0] * sj * sk + idx[1] * sk + idx[2];
+        for b in 0..num_blocks {
+            ac_seq.push(quantized_flat[b * bt + flat_idx]);
+        }
+    }
+
+    (dc_seq, ac_seq)
 }
 
 /// Generate scan indices sorted by L2 distance from the origin.
@@ -224,31 +249,6 @@ pub fn get_scan_indices(block_shape: BlockShape) -> Vec<[usize; 3]> {
         da.partial_cmp(&db).unwrap()
     });
     indices
-}
-
-/// Convert quantized blocks into DC and AC sequences using the scan ordering.
-fn blocks_to_sequence(
-    blocks: &[Vec<i32>],
-    scan_indices: &[[usize; 3]],
-    block_shape: BlockShape,
-) -> (Vec<i32>, Vec<i32>) {
-    let [_si, sj, sk] = block_shape;
-    let num_blocks = blocks.len();
-
-    // DC: first element (0,0,0) of each block
-    let dc_sequence: Vec<i32> = blocks.iter().map(|b| b[0]).collect();
-
-    // AC: all other elements in scan order
-    let block_size = scan_indices.len();
-    let mut ac_sequence = Vec::with_capacity(num_blocks * (block_size - 1));
-    for idx in &scan_indices[1..] {
-        let flat_idx = idx[0] * sj * sk + idx[1] * sk + idx[2];
-        for block in blocks {
-            ac_sequence.push(block[flat_idx]);
-        }
-    }
-
-    (dc_sequence, ac_sequence)
 }
 
 /// Run-length encode a sequence of integers.
@@ -293,6 +293,48 @@ pub fn padded_shape(shape: VolumeShape, block_shape: BlockShape) -> VolumeShape 
         }
     }
     result
+}
+
+/// Pad the array so each dimension is divisible by the block size.
+pub fn pad_array(array: &ArrayView3<f64>, block_shape: BlockShape) -> Array3<f64> {
+    let shape = array.shape();
+    let ps = padded_shape([shape[0], shape[1], shape[2]], block_shape);
+
+    if ps[0] == shape[0] && ps[1] == shape[1] && ps[2] == shape[2] {
+        return array.to_owned();
+    }
+
+    let mut padded = Array3::<f64>::zeros((ps[0], ps[1], ps[2]));
+    padded
+        .slice_mut(ndarray::s![..shape[0], ..shape[1], ..shape[2]])
+        .assign(array);
+    padded
+}
+
+/// Split a padded 3D array into non-overlapping blocks.
+pub fn split_into_blocks(array: &Array3<f64>, block_shape: BlockShape) -> Vec<Vec<f64>> {
+    let shape = array.shape();
+    let ni = shape[0] / block_shape[0];
+    let nj = shape[1] / block_shape[1];
+    let nk = shape[2] / block_shape[2];
+
+    let mut blocks = Vec::with_capacity(ni * nj * nk);
+    for bi in 0..ni {
+        for bj in 0..nj {
+            for bk in 0..nk {
+                let i0 = bi * block_shape[0];
+                let j0 = bj * block_shape[1];
+                let k0 = bk * block_shape[2];
+                let block_view = array.slice(ndarray::s![
+                    i0..i0 + block_shape[0],
+                    j0..j0 + block_shape[1],
+                    k0..k0 + block_shape[2]
+                ]);
+                blocks.push(block_view.iter().copied().collect());
+            }
+        }
+    }
+    blocks
 }
 
 #[cfg(test)]
