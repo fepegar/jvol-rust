@@ -1,74 +1,91 @@
 # CLI Reference
 
-JVol Rust provides three subcommands: `encode`, `decode`, and `bench`.
+JVol provides two CLIs: a Python package (`jvol`) and a Rust binary
+(`jvol-rust`). Both share the same interface.
 
-## `jvol-rust encode`
+## `encode`
 
 Encode a NIfTI file into a compressed `.jvol` file.
 
 ```
-jvol-rust encode [OPTIONS] <INPUT> <OUTPUT>
+jvol encode [OPTIONS] <INPUT> <OUTPUT>
 ```
 
 ### Arguments
 
-| Argument   | Description                         |
-|------------|-------------------------------------|
+| Argument   | Description                            |
+|------------|----------------------------------------|
 | `<INPUT>`  | Input NIfTI file (`.nii` or `.nii.gz`) |
-| `<OUTPUT>` | Output `.jvol` file path            |
+| `<OUTPUT>` | Output `.jvol` file path               |
 
 ### Options
 
-| Option              | Default | Description                                  |
-|---------------------|---------|----------------------------------------------|
-| `-q`, `--quality`   | `60`    | JPEG quality (1–100, higher = better quality) |
-| `-b`, `--block-size`| `8`     | Block size for 3D DCT                        |
-| `-v`, `--verbose`   | off     | Print encoding details and timing            |
+| Option              | Default | Description                                         |
+|---------------------|---------|-----------------------------------------------------|
+| `-q`, `--quality`   | `60`    | Quality level (1–100 for lossy, 0 for lossless)     |
+| `-l`, `--lossless`  | off     | Lossless mode (overrides quality to 0)              |
+| `-v`, `--verbose`   | off     | Print encoding details and timing                   |
 
-### Example
+### Examples
 
 ```bash
-jvol-rust encode brain.nii.gz brain.jvol --quality 80 --block-size 8 --verbose
-```
+# Lossy encode at default quality (60)
+jvol encode brain.nii.gz brain.jvol
 
-Outputs the elapsed time in seconds to stdout (for scripting/benchmarking).
+# High-quality lossy
+jvol encode brain.nii.gz brain.jvol -q 90
+
+# Lossless
+jvol encode brain.nii.gz brain.jvol --lossless
+
+# Verbose output with timing
+jvol encode brain.nii.gz brain.jvol -l -v
+```
 
 ---
 
-## `jvol-rust decode`
+## `decode`
 
 Decode a `.jvol` file back to NIfTI format.
 
 ```
-jvol-rust decode [OPTIONS] <INPUT> <OUTPUT>
+jvol decode [OPTIONS] <INPUT> <OUTPUT>
 ```
 
 ### Arguments
 
-| Argument   | Description                              |
-|------------|------------------------------------------|
-| `<INPUT>`  | Input `.jvol` file path                  |
-| `<OUTPUT>` | Output NIfTI file (`.nii` or `.nii.gz`)  |
+| Argument   | Description                             |
+|------------|-----------------------------------------|
+| `<INPUT>`  | Input `.jvol` file path                 |
+| `<OUTPUT>` | Output NIfTI file (`.nii` or `.nii.gz`) |
 
 ### Options
 
-| Option            | Default | Description                        |
-|-------------------|---------|------------------------------------|
-| `-v`, `--verbose` | off     | Print decoding details and timing  |
+| Option            | Default | Description                       |
+|-------------------|---------|-----------------------------------|
+| `-v`, `--verbose` | off     | Print decoding details and timing |
 
-### Example
+### Examples
 
 ```bash
-jvol-rust decode brain.jvol brain_decoded.nii.gz --verbose
+# Decode to uncompressed NIfTI (fastest)
+jvol decode brain.jvol brain_decoded.nii
+
+# Decode to gzip-compressed NIfTI
+jvol decode brain.jvol brain_decoded.nii.gz
 ```
+
+!!! tip
+    Decoding to `.nii` is **5–7× faster** than `.nii.gz` because it skips
+    gzip recompression.
 
 ---
 
-## `jvol-rust bench`
+## `bench` (Rust CLI only)
 
-Benchmark the core encode and decode algorithms on a NIfTI file. This subcommand
-times only the core algorithm (no file I/O overhead), making it ideal for fair
-performance comparisons.
+Benchmark the core encode and decode algorithms on a NIfTI file.
+Times only the codec (no file I/O), making it ideal for performance
+comparisons.
 
 ```
 jvol-rust bench [OPTIONS] <INPUT>
@@ -76,21 +93,22 @@ jvol-rust bench [OPTIONS] <INPUT>
 
 ### Arguments
 
-| Argument  | Description                                 |
-|-----------|---------------------------------------------|
-| `<INPUT>` | Input NIfTI file (`.nii` or `.nii.gz`)      |
+| Argument  | Description                            |
+|-----------|----------------------------------------|
+| `<INPUT>` | Input NIfTI file (`.nii` or `.nii.gz`) |
 
 ### Options
 
-| Option              | Default | Description                                  |
-|---------------------|---------|----------------------------------------------|
-| `-q`, `--quality`   | `60`    | JPEG quality (1–100)                         |
-| `-b`, `--block-size`| `8`     | Block size for 3D DCT                        |
+| Option              | Default | Description                                     |
+|---------------------|---------|-------------------------------------------------|
+| `-q`, `--quality`   | `60`    | Quality level (1–100 for lossy, 0 for lossless) |
+| `-l`, `--lossless`  | off     | Lossless mode                                   |
 
 ### Example
 
 ```bash
-jvol-rust bench brain.nii.gz --quality 60 --block-size 8
+jvol-rust bench brain.nii.gz --lossless
+jvol-rust bench brain.nii.gz -q 60
 ```
 
 Outputs two space-separated floats: `encode_time decode_time` (in seconds).
