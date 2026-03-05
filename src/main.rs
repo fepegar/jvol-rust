@@ -7,9 +7,7 @@ use nifti::NiftiObject;
 use jvol_rust::cli::{Cli, Commands};
 use jvol_rust::decoding::decode_array;
 use jvol_rust::encoding::encode_array;
-use jvol_rust::io::{
-    decode_jvol_to_nifti, dtype_from_nifti_code, encode_nifti_to_jvol, read_nifti,
-};
+use jvol_rust::io::{decode_jvol_to_nifti, dtype_from_nifti_code, encode_nifti_to_jvol, read_nifti};
 
 fn main() {
     let cli = Cli::parse();
@@ -19,9 +17,10 @@ fn main() {
             input,
             output,
             quality,
-            block_size,
+            lossless,
             verbose,
         } => {
+            let quality = if lossless { 0 } else { quality };
             let input_path = Path::new(&input);
             let output_path = Path::new(&output);
 
@@ -32,11 +31,15 @@ fn main() {
 
             if verbose {
                 eprintln!("Encoding '{}' -> '{}'", input, output);
-                eprintln!("Quality: {}, Block size: {}", quality, block_size);
+                if quality == 0 {
+                    eprintln!("Mode: lossless (LeGall 5/3 wavelet)");
+                } else {
+                    eprintln!("Mode: lossy, quality: {} (CDF 9/7 wavelet)", quality);
+                }
             }
 
             let start = Instant::now();
-            match encode_nifti_to_jvol(input_path, output_path, block_size, quality) {
+            match encode_nifti_to_jvol(input_path, output_path, quality) {
                 Ok(()) => {
                     let elapsed = start.elapsed();
                     if verbose {
@@ -95,8 +98,9 @@ fn main() {
         Commands::Bench {
             input,
             quality,
-            block_size,
+            lossless,
         } => {
+            let quality = if lossless { 0 } else { quality };
             let input_path = Path::new(&input);
             if !input_path.exists() {
                 eprintln!("Error: input file '{}' not found", input);
@@ -105,34 +109,46 @@ fn main() {
 
             // Read NIfTI (not timed)
             eprintln!("Loading NIfTI file...");
-            let (array, _affine) = read_nifti(input_path).unwrap_or_else(|e| {
+            let (channels, _affine) = read_nifti(input_path).unwrap_or_else(|e| {
                 eprintln!("Error reading NIfTI: {}", e);
                 std::process::exit(1);
             });
-            let shape = array.shape();
-            eprintln!("Array shape: [{}, {}, {}]", shape[0], shape[1], shape[2]);
+            let shape = channels[0].shape();
+            eprintln!(
+                "Array shape: [{}, {}, {}] ({} channel{})",
+                shape[0],
+                shape[1],
+                shape[2],
+                channels.len(),
+                if channels.len() > 1 { "s" } else { "" }
+            );
+            if quality == 0 {
+                eprintln!("Mode: lossless");
+            } else {
+                eprintln!("Mode: lossy, quality: {}", quality);
+            }
 
             let nifti_obj = nifti::ReaderOptions::new().read_file(input_path).unwrap();
             let nifti_dtype = dtype_from_nifti_code(nifti_obj.header().datatype);
 
-            // Time encode only
+            // Time encode only (first channel)
             let enc_start = Instant::now();
-            let result = encode_array(&array.view(), block_size, quality);
+            let result = encode_array(&channels[0].view(), quality);
             let enc_elapsed = enc_start.elapsed();
 
-            let block_shape = [block_size, block_size, block_size];
             let target_shape = [shape[0], shape[1], shape[2]];
 
             // Time decode only
             let dec_start = Instant::now();
             let _decoded = decode_array(
-                &result.dc_rle,
-                &result.ac_rle,
-                &result.quantization_table,
+                &result.rle,
                 target_shape,
-                block_shape,
+                result.wavelet,
+                result.levels,
+                result.step,
                 result.intercept,
                 result.slope,
+                quality,
                 nifti_dtype,
             );
             let dec_elapsed = dec_start.elapsed();

@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "jvol-rust",
-    about = "Lightning-fast JPEG compression for 3D medical images"
+    about = "Lightning-fast wavelet compression for 3D medical images"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -18,12 +18,12 @@ pub enum Commands {
         input: String,
         /// Output .jvol file path
         output: String,
-        /// JPEG quality (1-100, higher = better quality)
+        /// Quality (1-100 lossy, or 0 for lossless)
         #[arg(short, long, default_value_t = 60)]
         quality: u8,
-        /// Block size for 3D DCT
-        #[arg(short, long, default_value_t = 8)]
-        block_size: usize,
+        /// Lossless mode (overrides quality to 0)
+        #[arg(short, long)]
+        lossless: bool,
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -42,11 +42,11 @@ pub enum Commands {
     Bench {
         /// Input NIfTI file path
         input: String,
-        /// JPEG quality (1-100)
+        /// Quality (1-100 lossy, or 0 for lossless)
         #[arg(short, long, default_value_t = 60)]
         quality: u8,
-        /// Block size for 3D DCT
-        #[arg(short, long, default_value_t = 8)]
-        block_size: usize,
+        /// Lossless mode (overrides quality to 0)
+        #[arg(short, long)]
+        lossless: bool,
     },
 }

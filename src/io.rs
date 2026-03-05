@@ -12,8 +12,12 @@ use crate::decoding::decode_array;
 use crate::encoding::encode_array;
 use crate::types::*;
 
-/// Read a NIfTI file and return the 3D array (as f64) and affine matrix.
-pub fn read_nifti(path: &Path) -> Result<(Array3<f64>, Affine4x4), Box<dyn std::error::Error>> {
+/// Read a NIfTI file and return one or more 3D channels (as f64) and affine matrix.
+/// 3D files return a single channel. 4D files return one channel per volume.
+#[allow(clippy::type_complexity)]
+pub fn read_nifti(
+    path: &Path,
+) -> Result<(Vec<Array3<f64>>, Affine4x4), Box<dyn std::error::Error>> {
     let obj = ReaderOptions::new().read_file(path)?;
     let header = obj.header();
 
@@ -91,32 +95,56 @@ pub fn read_nifti(path: &Path) -> Result<(Array3<f64>, Affine4x4), Box<dyn std::
     let volume = obj.into_volume();
     let ndarray_data = volume.into_ndarray::<f64>()?;
 
-    let shape = ndarray_data.shape();
-    if shape.len() < 3 {
+    let ndim = ndarray_data.ndim();
+    if ndim < 3 {
         return Err("Expected at least 3 dimensions".into());
     }
 
     // The nifti crate returns Fortran-order (column-major) ndarray.
-    // Convert to standard C-order layout to match our encoding pipeline.
-    let array = ndarray_data
-        .into_dimensionality::<ndarray::Ix3>()
-        .map_err(|e| format!("Expected 3D volume: {}", e))?
-        .as_standard_layout()
-        .into_owned();
+    let channels = if ndim == 3 {
+        let array = ndarray_data
+            .into_dimensionality::<ndarray::Ix3>()
+            .map_err(|e| format!("Expected 3D volume: {}", e))?
+            .as_standard_layout()
+            .into_owned();
+        vec![array]
+    } else {
+        // 4D: shape is [ni, nj, nk, nc]
+        let shape = ndarray_data.shape().to_vec();
+        let nc = shape[3];
+        let standard = ndarray_data.as_standard_layout().into_owned();
+        let ni = shape[0];
+        let nj = shape[1];
+        let nk = shape[2];
+        (0..nc)
+            .map(|c| {
+                Array3::from_shape_fn((ni, nj, nk), |(i, j, k)| {
+                    standard[[i, j, k, c].as_ref()]
+                })
+            })
+            .collect()
+    };
 
-    Ok((array, affine))
+    Ok((channels, affine))
 }
 
-/// Write a 3D array as a NIfTI file.
+/// Write one or more 3D channels as a NIfTI file.
+/// Single channel → 3D; multiple channels → 4D.
 pub fn write_nifti(
-    array: &Array3<f64>,
+    channels: &[Array3<f64>],
     affine: &Affine4x4,
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use byteorder::{LittleEndian, WriteBytesExt};
 
-    let shape = array.shape();
+    if channels.is_empty() {
+        return Err("No channels to write".into());
+    }
+
+    let shape = channels[0].shape();
     let (ni, nj, nk) = (shape[0], shape[1], shape[2]);
+    let nc = channels.len();
+    let ndim = if nc > 1 { 4 } else { 3 };
 
     // Build a minimal NIfTI-1 header (348 bytes)
     let mut header = vec![0u8; 348];
@@ -125,18 +153,18 @@ pub fn write_nifti(
     // sizeof_hdr
     cursor.write_i32::<LittleEndian>(348)?;
 
-    // Skip to dim (offset 40)
+    // dim (offset 40)
     cursor.set_position(40);
-    cursor.write_i16::<LittleEndian>(3)?; // ndim
+    cursor.write_i16::<LittleEndian>(ndim as i16)?;
     cursor.write_i16::<LittleEndian>(ni as i16)?;
     cursor.write_i16::<LittleEndian>(nj as i16)?;
     cursor.write_i16::<LittleEndian>(nk as i16)?;
-    cursor.write_i16::<LittleEndian>(1)?; // dim[4]
+    cursor.write_i16::<LittleEndian>(nc as i16)?; // dim[4]
     cursor.write_i16::<LittleEndian>(1)?; // dim[5]
     cursor.write_i16::<LittleEndian>(1)?; // dim[6]
     cursor.write_i16::<LittleEndian>(1)?; // dim[7]
 
-    // Skip to datatype (offset 70)
+    // datatype (offset 70)
     cursor.set_position(70);
     cursor.write_i16::<LittleEndian>(16)?; // DT_FLOAT32
     cursor.write_i16::<LittleEndian>(32)?; // bitpix
@@ -155,7 +183,7 @@ pub fn write_nifti(
 
     // vox_offset (offset 108)
     cursor.set_position(108);
-    cursor.write_f32::<LittleEndian>(352.0)?; // data starts at byte 352
+    cursor.write_f32::<LittleEndian>(352.0)?;
 
     // sform_code (offset 254)
     cursor.set_position(254);
@@ -173,20 +201,15 @@ pub fn write_nifti(
     cursor.set_position(344);
     cursor.write_all(b"n+1\0")?;
 
-    // Write the file
-    let is_gz = path
-        .to_str()
-        .map(|s| s.ends_with(".nii.gz"))
-        .unwrap_or(false);
-
     // NIfTI stores data in Fortran order (first dimension varies fastest)
-    // Buffer all voxel data as bytes first, then write in one call
-    let total_voxels = ni * nj * nk;
+    let total_voxels = ni * nj * nk * nc;
     let mut data_buf: Vec<u8> = Vec::with_capacity(total_voxels * 4);
-    for k in 0..nk {
-        for j in 0..nj {
-            for i in 0..ni {
-                data_buf.extend_from_slice(&(array[[i, j, k]] as f32).to_le_bytes());
+    for ch in &channels[..nc] {
+        for k in 0..nk {
+            for j in 0..nj {
+                for i in 0..ni {
+                    data_buf.extend_from_slice(&(ch[[i, j, k]] as f32).to_le_bytes());
+                }
             }
         }
     }
@@ -197,6 +220,11 @@ pub fn write_nifti(
         writer.write_all(&data_buf)?;
         Ok(())
     };
+
+    let is_gz = path
+        .to_str()
+        .map(|s| s.ends_with(".nii.gz"))
+        .unwrap_or(false);
 
     if is_gz {
         let file = File::create(path)?;
@@ -248,30 +276,45 @@ pub fn open_jvol(path: &Path) -> Result<EncodedVolume, Box<dyn std::error::Error
 pub fn encode_nifti_to_jvol(
     input_path: &Path,
     output_path: &Path,
-    block_size: usize,
     quality: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (array, affine) = read_nifti(input_path)?;
-    let shape = [array.shape()[0], array.shape()[1], array.shape()[2]];
+    let (channels, affine) = read_nifti(input_path)?;
+    let shape = [
+        channels[0].shape()[0],
+        channels[0].shape()[1],
+        channels[0].shape()[2],
+    ];
 
     let header = nifti::ReaderOptions::new().read_file(input_path)?;
     let nifti_dtype = dtype_from_nifti_code(header.header().datatype);
 
-    let result = encode_array(&array.view(), block_size, quality);
+    let mut encoded_channels = Vec::with_capacity(channels.len());
+    let mut wavelet = WaveletType::LeGall53;
+    let mut levels = 0;
+
+    for ch in &channels {
+        let result = encode_array(&ch.view(), quality);
+        wavelet = result.wavelet;
+        levels = result.levels;
+        encoded_channels.push(EncodedChannel {
+            rle: result.rle,
+            intercept: result.intercept,
+            slope: result.slope,
+            step: result.step,
+        });
+    }
 
     let encoded = EncodedVolume {
         metadata: JvolMetadata {
             shape,
+            num_channels: channels.len(),
             ijk_to_ras: affine,
             dtype: nifti_dtype,
-            intercept: result.intercept,
-            slope: result.slope,
-            block_shape: [block_size, block_size, block_size],
+            wavelet,
+            levels,
             quality,
         },
-        quantization_table: result.quantization_table,
-        dc_rle: result.dc_rle,
-        ac_rle: result.ac_rle,
+        channels: encoded_channels,
     };
 
     save_jvol(&encoded, output_path)?;
@@ -286,17 +329,22 @@ pub fn decode_jvol_to_nifti(
     let encoded = open_jvol(input_path)?;
     let meta = &encoded.metadata;
 
-    let array = decode_array(
-        &encoded.dc_rle,
-        &encoded.ac_rle,
-        &encoded.quantization_table,
-        meta.shape,
-        meta.block_shape,
-        meta.intercept,
-        meta.slope,
-        meta.dtype,
-    );
+    let mut channels = Vec::with_capacity(encoded.channels.len());
+    for ch in &encoded.channels {
+        let array = decode_array(
+            &ch.rle,
+            meta.shape,
+            meta.wavelet,
+            meta.levels,
+            ch.step,
+            ch.intercept,
+            ch.slope,
+            meta.quality,
+            meta.dtype,
+        );
+        channels.push(array);
+    }
 
-    write_nifti(&array, &meta.ijk_to_ras, output_path)?;
+    write_nifti(&channels, &meta.ijk_to_ras, output_path)?;
     Ok(())
 }
