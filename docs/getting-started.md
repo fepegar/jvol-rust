@@ -2,12 +2,6 @@
 
 ## Installation
 
-### Python package (recommended)
-
-```bash
-pip install jvol
-```
-
 ### Pre-built binaries
 
 Install the latest supported release with curl:
@@ -40,9 +34,27 @@ curl -fsSL https://raw.githubusercontent.com/fepegar/jvol-rust/main/install.sh |
 If you prefer to inspect the binary artifacts directly, they are available on the
 [Releases page](https://github.com/fepegar/jvol-rust/releases).
 
-### Building from source
+### Rust CLI
 
 Requires [Rust](https://rustup.rs/) 1.80 or later.
+
+```bash
+cargo install --git https://github.com/fepegar/jvol-rust.git --bin jvol-rust
+```
+
+This installs the `jvol-rust` binary.
+
+### Python package
+
+Requires [Rust](https://rustup.rs/) 1.80 or later and Python 3.9 or later.
+
+```bash
+pip install git+https://github.com/fepegar/jvol-rust.git
+```
+
+This installs the `jvol` Python package and `jvol` CLI.
+
+### Local checkout
 
 ```bash
 git clone https://github.com/fepegar/jvol-rust.git
@@ -50,9 +62,12 @@ cd jvol-rust
 cargo build --release
 ```
 
-The binary will be at `target/release/jvol-rust`.
+The compiled Rust binary will be at `target/release/jvol-rust`.
 
 ## Basic usage
+
+Examples below use the Python CLI (`jvol`). If you installed the Rust binary,
+replace `jvol` with `jvol-rust`.
 
 ### Lossy encode (default)
 

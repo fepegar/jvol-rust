@@ -3,6 +3,9 @@
 JVol provides two CLIs: a Python package (`jvol`) and a Rust binary
 (`jvol-rust`). Both share the same interface.
 
+Examples below use `jvol`; replace it with `jvol-rust` if you installed the
+Rust CLI directly.
+
 ## `encode`
 
 Encode a NIfTI file into a compressed `.jvol` file.
