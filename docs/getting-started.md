@@ -2,44 +2,29 @@
 
 ## Installation
 
-### Python package (recommended)
+JVol is currently installed directly from source.
 
-```bash
-pip install jvol
-```
-
-### Pre-built binaries
-
-Download the latest release for your platform from the
-[Releases page](https://github.com/fepegar/jvol-rust/releases).
-
-=== "macOS (Apple Silicon)"
-
-    ```bash
-    curl -LO https://github.com/fepegar/jvol-rust/releases/latest/download/jvol-rust-aarch64-apple-darwin.tar.gz
-    tar xzf jvol-rust-aarch64-apple-darwin.tar.gz
-    sudo mv jvol-rust /usr/local/bin/
-    ```
-
-=== "macOS (Intel)"
-
-    ```bash
-    curl -LO https://github.com/fepegar/jvol-rust/releases/latest/download/jvol-rust-x86_64-apple-darwin.tar.gz
-    tar xzf jvol-rust-x86_64-apple-darwin.tar.gz
-    sudo mv jvol-rust /usr/local/bin/
-    ```
-
-=== "Linux (x86_64)"
-
-    ```bash
-    curl -LO https://github.com/fepegar/jvol-rust/releases/latest/download/jvol-rust-x86_64-unknown-linux-gnu.tar.gz
-    tar xzf jvol-rust-x86_64-unknown-linux-gnu.tar.gz
-    sudo mv jvol-rust /usr/local/bin/
-    ```
-
-### Building from source
+### Rust CLI
 
 Requires [Rust](https://rustup.rs/) 1.80 or later.
+
+```bash
+cargo install --git https://github.com/fepegar/jvol-rust.git --bin jvol-rust
+```
+
+This installs the `jvol-rust` binary.
+
+### Python package
+
+Requires [Rust](https://rustup.rs/) 1.80 or later and Python 3.9 or later.
+
+```bash
+pip install git+https://github.com/fepegar/jvol-rust.git
+```
+
+This installs the `jvol` Python package and `jvol` CLI.
+
+### Local checkout
 
 ```bash
 git clone https://github.com/fepegar/jvol-rust.git
@@ -47,9 +32,12 @@ cd jvol-rust
 cargo build --release
 ```
 
-The binary will be at `target/release/jvol-rust`.
+The compiled Rust binary will be at `target/release/jvol-rust`.
 
 ## Basic usage
+
+Examples below use the Python CLI (`jvol`). If you installed the Rust binary,
+replace `jvol` with `jvol-rust`.
 
 ### Lossy encode (default)
 

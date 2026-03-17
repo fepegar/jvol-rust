@@ -22,6 +22,9 @@ package.
 
 ## Quick start
 
+Examples below use the Python CLI (`jvol`). If you installed the Rust binary,
+replace `jvol` with `jvol-rust`.
+
 ```bash
 # Lossy encode (default quality=60)
 jvol encode brain.nii.gz brain.jvol
