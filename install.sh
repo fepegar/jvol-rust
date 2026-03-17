@@ -106,7 +106,7 @@ main() {
     archive_url="$(download_url_for "${target}")"
     tmpdir="$(mktemp -d)"
 
-    trap 'rm -rf "${tmpdir}"' EXIT
+    trap "rm -rf '${tmpdir}'" EXIT
 
     mkdir -p "${install_dir}"
 
