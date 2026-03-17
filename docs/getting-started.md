@@ -10,32 +10,35 @@ pip install jvol
 
 ### Pre-built binaries
 
-Download the latest release for your platform from the
+Install the latest supported release with curl:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fepegar/jvol-rust/main/install.sh | bash
+```
+
+The installer automatically selects the right binary for:
+
+- macOS (Apple Silicon)
+- macOS (Intel)
+- Linux (x86_64)
+
+By default it installs to `/usr/local/bin` when writable, otherwise to
+`~/.local/bin`.
+
+You can override the install directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fepegar/jvol-rust/main/install.sh | INSTALL_DIR="$HOME/.local/bin" bash
+```
+
+You can also install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fepegar/jvol-rust/main/install.sh | VERSION=v0.2.0 bash
+```
+
+If you prefer to inspect the binary artifacts directly, they are available on the
 [Releases page](https://github.com/fepegar/jvol-rust/releases).
-
-=== "macOS (Apple Silicon)"
-
-    ```bash
-    curl -LO https://github.com/fepegar/jvol-rust/releases/latest/download/jvol-rust-aarch64-apple-darwin.tar.gz
-    tar xzf jvol-rust-aarch64-apple-darwin.tar.gz
-    sudo mv jvol-rust /usr/local/bin/
-    ```
-
-=== "macOS (Intel)"
-
-    ```bash
-    curl -LO https://github.com/fepegar/jvol-rust/releases/latest/download/jvol-rust-x86_64-apple-darwin.tar.gz
-    tar xzf jvol-rust-x86_64-apple-darwin.tar.gz
-    sudo mv jvol-rust /usr/local/bin/
-    ```
-
-=== "Linux (x86_64)"
-
-    ```bash
-    curl -LO https://github.com/fepegar/jvol-rust/releases/latest/download/jvol-rust-x86_64-unknown-linux-gnu.tar.gz
-    tar xzf jvol-rust-x86_64-unknown-linux-gnu.tar.gz
-    sudo mv jvol-rust /usr/local/bin/
-    ```
 
 ### Building from source
 
