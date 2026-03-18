@@ -2,7 +2,37 @@
 
 ## Installation
 
-JVol is currently installed directly from source.
+### Pre-built binaries
+
+Install the latest supported release with curl:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fepegar/jvol-rust/main/install.sh | bash
+```
+
+The installer automatically selects the right binary for:
+
+- macOS (Apple Silicon)
+- macOS (Intel)
+- Linux (x86_64)
+
+By default it installs to `/usr/local/bin` when writable, otherwise to
+`~/.local/bin`.
+
+You can override the install directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fepegar/jvol-rust/main/install.sh | INSTALL_DIR="$HOME/.local/bin" bash
+```
+
+You can also install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fepegar/jvol-rust/main/install.sh | VERSION=v0.2.0 bash
+```
+
+If you prefer to inspect the binary artifacts directly, they are available on the
+[Releases page](https://github.com/fepegar/jvol-rust/releases).
 
 ### Rust CLI
 
